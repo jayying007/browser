@@ -2,8 +2,8 @@ import socket
 import ssl
 import tkinter
 import tkinter.font
-from parser import HTMLParser
-from layout import Layout
+from parser import *
+from layout import *
 from config import *
 
 class URL:
@@ -74,25 +74,42 @@ class Browser:
     
     def load(self, url):
         body = url.request()
+        # Html树
         self.nodes = HTMLParser(body).parse()
-        self.display_list = Layout(self.nodes).display_list
+        # 布局树
+        self.document = DocumentLayout(self.nodes)
+        self.document.layout()
+        # 绘图
+        self.display_list = []
+        paint_tree(self.document, self.display_list)
         self.draw()
 
     def draw(self):
         self.canvas.delete("all")
-        for x, y, word, font in self.display_list:
-            if y > self.scroll + HEIGHT: continue
-            if y + VSTEP < self.scroll: continue
-            self.canvas.create_text(x, y - self.scroll, text=word, font=font, anchor='nw')
+        for cmd in self.display_list:
+            # 跳过不可见区域
+            if cmd.top > self.scroll + HEIGHT: 
+                continue
+            if cmd.bottom < self.scroll: 
+                continue
+
+            cmd.execute(self.scroll, self.canvas)
 
     def scrolldown(self, e):
-        self.scroll += SCROLL_STEP
+        max_y = max(self.document.height + 2*VSTEP - HEIGHT, 0)
+        self.scroll = min(self.scroll + SCROLL_STEP, max_y)
         self.draw()
 
 def print_tree(node, indent=0):
     print(" " * indent, node)
     for child in node.children:
         print_tree(child, indent + 2)
+
+def paint_tree(layout_object, display_list):
+    display_list.extend(layout_object.paint())
+
+    for child in layout_object.children:
+        paint_tree(child, display_list)
 
 if __name__ == "__main__":
     import sys
