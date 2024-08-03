@@ -58,6 +58,21 @@ class URL:
         s.close()
 
         return content
+    
+    def resolve(self, url):
+        if "://" in url: return URL(url)
+        if not url.startswith("/"):
+            dir, _ = self.path.rsplit("/", 1)
+            while url.startswith("../"):
+                _, url = url.split("/", 1)
+                if "/" in dir:
+                    dir, _ = dir.rsplit("/", 1)
+            url = dir + "/" + url
+        if url.startswith("//"):
+            return URL(self.scheme + ":" + url)
+        else:
+            return URL(self.scheme + "://" + self.host + \
+                       ":" + str(self.port) + url)
 
 class Browser:
     def __init__(self):
@@ -65,7 +80,8 @@ class Browser:
         self.canvas = tkinter.Canvas(
             self.window, 
             width=WIDTH,
-            height=HEIGHT
+            height=HEIGHT,
+            bg="white"
         )
         self.canvas.pack()
 
@@ -76,6 +92,24 @@ class Browser:
         body = url.request()
         # Html树
         self.nodes = HTMLParser(body).parse()
+        # 解析CSS
+        rules = DEFAULT_STYLE_SHEET.copy()
+
+        links = [node.attributes["href"]
+                    for node in tree_to_list(self.nodes, [])
+                    if isinstance(node, Element)
+                    and node.tag == "link"
+                    and node.attributes.get("rel") == "stylesheet"
+                    and "href" in node.attributes]
+        for link in links:
+            style_url = url.resolve(link)
+            try:
+                body = style_url.request()
+            except:
+                continue
+            rules.extend(CSSParser(body).parse())
+
+        style(self.nodes, sorted(rules, key=cascade_priority))
         # 布局树
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
@@ -100,10 +134,51 @@ class Browser:
         self.scroll = min(self.scroll + SCROLL_STEP, max_y)
         self.draw()
 
+def style(node, rules):
+    node.style = {}
+
+    for property, default_value in INHERITED_PROPERTIES.items():
+        if node.parent:
+            node.style[property] = node.parent.style[property]
+        else:
+            node.style[property] = default_value
+
+    for selector, body in rules:
+        if not selector.matches(node): continue
+        for property, value in body.items():
+            node.style[property] = value
+    # the style attribute should override style sheet values.
+    if isinstance(node, Element) and "style" in node.attributes:
+        pairs = CSSParser(node.attributes["style"]).body()
+        for property, value in pairs.items():
+            node.style[property] = value
+
+    if node.style["font-size"].endswith("%"):
+        if node.parent:
+            parent_font_size = node.parent.style["font-size"]
+        else:
+            parent_font_size = INHERITED_PROPERTIES["font-size"]
+        node_pct = float(node.style["font-size"][:-1]) / 100
+        parent_px = float(parent_font_size[:-2])
+        node.style["font-size"] = str(node_pct * parent_px) + "px"
+    
+    for child in node.children:
+        style(child, rules)
+
+def cascade_priority(rule):
+    selector, body = rule
+    return selector.priority
+
 def print_tree(node, indent=0):
     print(" " * indent, node)
     for child in node.children:
         print_tree(child, indent + 2)
+
+def tree_to_list(tree, list):
+    list.append(tree)
+    for child in tree.children:
+        tree_to_list(child, list)
+    return list
 
 def paint_tree(layout_object, display_list):
     display_list.extend(layout_object.paint())
@@ -111,6 +186,13 @@ def paint_tree(layout_object, display_list):
     for child in layout_object.children:
         paint_tree(child, display_list)
 
+DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
+INHERITED_PROPERTIES = {
+    "font-size": "16px",
+    "font-style": "normal",
+    "font-weight": "normal",
+    "color": "black",
+}
 if __name__ == "__main__":
     import sys
     # body = URL(sys.argv[1]).request()
