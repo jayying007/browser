@@ -27,7 +27,7 @@ class URL:
             self.host, port = self.host.split(":", 1)
             self.port = int(port)
     
-    def request(self, payload=None):
+    def request(self, referrer, payload=None):
         s = socket.socket(
             family=socket.AF_INET,
             type=socket.SOCK_STREAM,
@@ -45,6 +45,14 @@ class URL:
             length = len(payload.encode("utf8"))
             request += "Content-Length: {}\r\n".format(length)
         request += "Host: {}\r\n".format(self.host)
+        if self.host in COOKIE_JAR:
+            cookie, params = COOKIE_JAR[self.host]
+            allow_cookie = True
+            if referrer and params.get("samesite", "none") == "lax":
+                if method != "GET":
+                    allow_cookie = self.host == referrer.host
+            if allow_cookie:
+                request += "Cookie: {}\r\n".format(cookie)
         request += "\r\n"
         # Body
         if payload: request += payload
@@ -61,13 +69,25 @@ class URL:
             if line == "\r\n": break
             header, value = line.split(":", 1)
             response_headers[header.casefold()] = value.strip()
+        if "set-cookie" in response_headers:
+            cookie = response_headers["set-cookie"]
+            params = {}
+            if ";" in cookie:
+                cookie, rest = cookie.split(";", 1)
+                for param in rest.split(";"):
+                    if '=' in param:
+                        param, value = param.split("=", 1)
+                    else:
+                        value = "true"
+                    params[param.strip().casefold()] = value.casefold()
+            COOKIE_JAR[self.host] = (cookie, params)
         assert "transfer-encoding" not in response_headers
         assert "content-encoding" not in response_headers
         # Response Content
         content = response.read()
         s.close()
 
-        return content
+        return response_headers, content
     
     def resolve(self, url):
         if "://" in url: return URL(url)
@@ -91,7 +111,11 @@ class URL:
         if self.scheme == "http" and self.port == 80:
             port_part = ""
         return self.scheme + "://" + self.host + port_part + self.path
+    
+    def origin(self):
+        return self.scheme + "://" + self.host + ":" + str(self.port)
 
+COOKIE_JAR = {}
 class Browser:
     def __init__(self):
         self.tabs = []
@@ -304,11 +328,22 @@ class Tab:
         self.history = []
         # 当前焦点  
         self.focus = None
+
+    def allowed_request(self, url):
+        return self.allowed_origins == None or url.origin() in self.allowed_origins
     
     def load(self, url, payload=None):
         self.history.append(url)
         self.url = url
-        body = url.request(payload)
+
+        headers, body = url.request(self.url, payload)
+        self.allowed_origins = None
+        if "content-security-policy" in headers:
+            csp = headers["content-security-policy"].split()
+            if len(csp) > 0 and csp[0] == "default-src":
+                self.allowed_origins = []
+                for origin in csp[1:]:
+                    self.allowed_origins.append(URL(origin).origin())
         # Html树
         self.nodes = HTMLParser(body).parse()
         # 解析CSS
@@ -322,8 +357,11 @@ class Tab:
                     and "href" in node.attributes]
         for link in links:
             style_url = url.resolve(link)
+            if not self.allowed_request(style_url):
+                print("Blocked link", link, "due to CSP")
+                continue
             try:
-                body = style_url.request()
+                header, body = style_url.request(url)
             except:
                 continue
             self.rules.extend(CSSParser(body).parse())
@@ -336,8 +374,11 @@ class Tab:
                    and "src" in node.attributes]
         for script in scripts:
             script_url = url.resolve(script)
+            if not self.allowed_request(script_url):
+                print("Blocked script", script, "due to CSP")
+                continue
             try:
-                body = script_url.request()
+                header, body = script_url.request(url)
             except:
                 continue
             self.js.run(script, body)
