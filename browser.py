@@ -7,6 +7,8 @@ from parser import *
 from layout import *
 from config import *
 from display import *
+from script import *
+from util import *
 
 class URL:
     def __init__(self, url):
@@ -325,6 +327,20 @@ class Tab:
             except:
                 continue
             self.rules.extend(CSSParser(body).parse())
+        # 解析JavaScript
+        self.js = JSContext(self)
+        scripts = [node.attributes["src"] for node
+                   in tree_to_list(self.nodes, [])
+                   if isinstance(node, Element)
+                   and node.tag == "script"
+                   and "src" in node.attributes]
+        for script in scripts:
+            script_url = url.resolve(script)
+            try:
+                body = script_url.request()
+            except:
+                continue
+            self.js.run(script, body)
         
         self.render()
 
@@ -367,9 +383,11 @@ class Tab:
             if isinstance(elt, Text):
                 pass
             elif elt.tag == "a" and "href" in elt.attributes:
+                if self.js.dispatch_event("click", elt): return
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
             elif elt.tag == "input":
+                if self.js.dispatch_event("click", elt): return
                 elt.attributes["value"] = ""
                 if self.focus:
                     self.focus.is_focused = False
@@ -377,6 +395,7 @@ class Tab:
                 elt.is_focused = True
                 return self.render()
             elif elt.tag == "button":
+                if self.js.dispatch_event("click", elt): return
                 while elt:
                     if elt.tag == "form" and "action" in elt.attributes:
                         return self.submit_form(elt)
@@ -391,10 +410,12 @@ class Tab:
 
     def keypress(self, char):
         if self.focus:
+            if self.js.dispatch_event("keydown", self.focus): return
             self.focus.attributes["value"] += char
             self.render()
 
     def submit_form(self, elt):
+        if self.js.dispatch_event("submit", elt): return
         inputs = [node for node in tree_to_list(elt, [])
                   if isinstance(node, Element)
                   and node.tag == "input"
@@ -451,12 +472,6 @@ def print_tree(node, indent=0):
     print(" " * indent, node)
     for child in node.children:
         print_tree(child, indent + 2)
-
-def tree_to_list(tree, list):
-    list.append(tree)
-    for child in tree.children:
-        tree_to_list(child, list)
-    return list
 
 def paint_tree(layout_object, display_list):
     if layout_object.should_paint():

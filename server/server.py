@@ -4,12 +4,15 @@ import urllib.parse
 ENTRIES = [ 'Pavel was here' ]
 def show_comments():
     out = "<!doctype html>"
-    for entry in ENTRIES:
-        out += "<p>" + entry + "</p>"
     out += "<form action=add method=post>"
     out +=   "<p><input name=guest></p>"
     out +=   "<p><button>Sign the book!</button></p>"
     out += "</form>"
+    for entry in ENTRIES:
+        out += "<p>" + entry + "</p>"
+    out += "<link rel=stylesheet href=/comment.css>"
+    out += "<strong></strong>"
+    out += "<script src=/comment.js></script>"
     return out
 
 def form_decode(body):
@@ -22,7 +25,7 @@ def form_decode(body):
     return params
 
 def add_entry(params):
-    if 'guest' in params:
+    if 'guest' in params and len(params['guest']) <= 100:
         ENTRIES.append(params['guest'])
     return show_comments()
 
@@ -37,6 +40,12 @@ def do_request(method, url, headers, body):
     elif method == "POST" and url == "/add":
         params = form_decode(body)
         return "200 OK", add_entry(params)
+    elif method == "GET" and url == "/comment.js":
+        with open("comment.js") as f:
+            return "200 OK", f.read()
+    elif method == "GET" and url == "/comment.css":
+        with open("comment.css") as f:
+            return "200 OK", f.read()
     else:
         return "404 Not Found", not_found(url, method)
 
@@ -68,14 +77,16 @@ def handle_connection(conx):
     conx.send(response.encode('utf8'))
     conx.close()
 
-s = socket.socket(
-    family=socket.AF_INET,
-    type=socket.SOCK_STREAM,
-    proto=socket.IPPROTO_TCP)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('', 8000))
-s.listen()
+if __name__ == "__main__":
+    s = socket.socket(
+        family=socket.AF_INET,
+        type=socket.SOCK_STREAM,
+        proto=socket.IPPROTO_TCP)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('', 8000))
+    s.listen()
 
-while True:
-    conx, addr = s.accept()
-    handle_connection(conx)
+    while True:
+        conx, addr = s.accept()
+        print("Received connection from", addr)
+        handle_connection(conx)
