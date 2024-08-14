@@ -53,6 +53,15 @@ def add_entry(session, params):
     if 'guest' in params and len(params['guest']) <= 100:
         ENTRIES.append((params['guest'], session["user"]))
 
+def show_count():
+    out = "<!doctype html>"
+    out += "<div>";
+    out += "  Let's count up to 99!"
+    out += "</div>";
+    out += "<div>Output</div>"
+    out += "<script src=/eventloop.js></script>"
+    return out
+
 def not_found(url, method):
     out = "<!doctype html>"
     out += "<h1>{} {} not found!</h1>".format(method, url)
@@ -71,11 +80,16 @@ def do_request(session, method, url, headers, body):
     elif method == "GET" and url == "/comment.js":
         with open("comment.js") as f:
             return "200 OK", f.read()
+    elif method == "GET" and url == "/eventloop.js":
+        with open("eventloop.js") as f:
+            return "200 OK", f.read()
     elif method == "GET" and url == "/comment.css":
         with open("comment.css") as f:
             return "200 OK", f.read()
     elif method == "GET" and url == "/login":
         return "200 OK", login_form(session)
+    elif method == "GET" and url == "/count":
+        return "200 OK", show_count()
     else:
         return "404 Not Found", not_found(url, method)
     

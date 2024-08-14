@@ -10,3 +10,5 @@ INHERITED_PROPERTIES = {
     "font-weight": "normal",
     "color": "black",
 }
+
+REFRESH_RATE_SEC = .033
