@@ -1,10 +1,21 @@
 import skia
+from parser import parse_transform
 
 def tree_to_list(tree, list):
     list.append(tree)
     for child in tree.children:
         tree_to_list(child, list)
     return list
+
+def add_parent_pointers(nodes, parent=None):
+    for node in nodes:
+        node.parent = parent
+        add_parent_pointers(node.children, node)
+
+def print_composited_layers(composited_layers):
+    print("Composited layers:")
+    for layer in composited_layers:
+        print("  " * 4 + str(layer))
 
 NAMED_COLORS = {
     "black": "#000000",
@@ -51,3 +62,41 @@ def parse_blend_mode(blend_mode_str):
 def linespace(font):
     metrics = font.getMetrics()
     return metrics.fDescent - metrics.fAscent
+
+def map_translation(rect, translation, reversed=False):
+    if not translation:
+        return rect
+    else:
+        (x, y) = translation
+        matrix = skia.Matrix()
+        if reversed:
+            matrix.setTranslate(-x, -y)
+        else:
+            matrix.setTranslate(x, y)
+        return matrix.mapRect(rect)
+    
+def absolute_bounds_for_obj(obj):
+    rect = skia.Rect.MakeXYWH(
+        obj.x, obj.y, obj.width, obj.height)
+    cur = obj.node
+    while cur:
+        rect = map_translation(rect,
+            parse_transform(
+                cur.style.get("transform", "")))
+        cur = cur.parent
+    return rect
+
+def local_to_absolute(display_item, rect):
+    while display_item.parent:
+        rect = display_item.parent.map(rect)
+        display_item = display_item.parent
+    return rect
+
+def absolute_to_local(display_item, rect):
+    parent_chain = []
+    while display_item.parent:
+        parent_chain.append(display_item.parent)
+        display_item = display_item.parent
+    for parent in reversed(parent_chain):
+        rect = parent.unmap(rect)
+    return rect

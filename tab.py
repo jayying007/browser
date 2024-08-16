@@ -26,10 +26,15 @@ class Tab:
         self.focus = None
         self.browser = browser
 
-        self.needs_render = False
+        self.needs_style = False
+        self.needs_layout = False
+        self.needs_paint = False
+        
         self.js = None
         self.task_runner = TaskRunner(self)
         self.task_runner.start_thread()
+
+        self.composited_updates = []
 
     def allowed_request(self, url):
         return self.allowed_origins == None or url.origin() in self.allowed_origins
@@ -100,21 +105,35 @@ class Tab:
     # 渲染
     ##########################
     def set_needs_render(self):
-        self.needs_render = True
+        self.needs_style = True
+        self.browser.set_needs_animation_frame(self)
+
+    def set_needs_layout(self):
+        self.needs_layout = True
+        self.browser.set_needs_animation_frame(self)
+
+    def set_needs_paint(self):
+        self.needs_paint = True
         self.browser.set_needs_animation_frame(self)
 
     def render(self):
-        if not self.needs_render: return
         self.browser.measure.time('render')
 
-        style(self.nodes, sorted(self.rules, key=cascade_priority))
+        if self.needs_style:
+            style(self.nodes, sorted(self.rules, key=cascade_priority), self)
+            self.needs_layout = True
+            self.needs_style = False
         # 布局树
-        self.document = DocumentLayout(self.nodes)
-        self.document.layout()
+        if self.needs_layout:
+            self.document = DocumentLayout(self.nodes)
+            self.document.layout()
+            self.needs_paint = True
+            self.needs_layout = False
         # 绘图
-        self.display_list = []
-        paint_tree(self.document, self.display_list)
-        self.needs_render = False
+        if self.needs_paint:
+            self.display_list = []
+            paint_tree(self.document, self.display_list)
+            self.needs_paint = False
         
         clamped_scroll = self.clamp_scroll(self.scroll)
         if clamped_scroll != self.scroll:
@@ -130,16 +149,39 @@ class Tab:
         self.js.interp.evaljs("__runRAFHandlers()")
         self.browser.measure.stop('script-runRAFHandlers')
 
+        for node in tree_to_list(self.nodes, []):
+            for (property_name, animation) in \
+                node.animations.items():
+                value = animation.animate()
+                if value:
+                    node.style[property_name] = value
+                    self.composited_updates.append(node)
+                    self.set_needs_paint()
+
+        needs_composite = self.needs_style or self.needs_layout
+
         self.render()
 
         scroll = None
         if self.scroll_changed_in_tab:
             scroll = self.scroll
+        composited_updates = None
+        if not needs_composite:
+            composited_updates = {}
+            for node in self.composited_updates:
+                composited_updates[node] = node.blend_op
+        self.composited_updates = []
+
         document_height = math.ceil(self.document.height + 2*VSTEP)
-        commit_data = CommitData(self.url, scroll, document_height, self.display_list)
+        commit_data = CommitData(
+            self.url, scroll, document_height,
+            self.display_list,
+            composited_updates,
+        )
         self.display_list = None
-        self.browser.commit(self, commit_data)
         self.scroll_changed_in_tab = False
+
+        self.browser.commit(self, commit_data)
 
     def clamp_scroll(self, scroll):
         height = math.ceil(self.document.height + 2*VSTEP)
@@ -156,10 +198,10 @@ class Tab:
         self.focus = None
 
         y += self.scroll
-
+        loc_rect = skia.Rect.MakeXYWH(x, y, 1, 1)
         objs = [obj for obj in tree_to_list(self.document, [])
-                if obj.x <= x < obj.x + obj.width
-                and obj.y <= y < obj.y + obj.height]
+                if absolute_bounds_for_obj(obj).intersects(
+                    loc_rect)]
         if not objs: return
 
         elt = objs[-1].node
@@ -170,7 +212,8 @@ class Tab:
                 pass
             elif elt.tag == "a" and "href" in elt.attributes:
                 url = self.url.resolve(elt.attributes["href"])
-                return self.load(url)
+                self.load(url)
+                return
             elif elt.tag == "input":
                 elt.attributes["value"] = ""
                 if self.focus:
@@ -178,8 +221,9 @@ class Tab:
                 self.focus = elt
                 elt.is_focused = True
                 self.set_needs_render()
+                return
             elif elt.tag == "button":
-                while elt:
+                while elt.parent:
                     if elt.tag == "form" and "action" in elt.attributes:
                         return self.submit_form(elt)
                     elt = elt.parent
@@ -217,9 +261,10 @@ class Tab:
             self.set_needs_render()
 
 
-def style(node, rules):
-    node.style = {}
+def style(node, rules, tab):
+    old_style = node.style
 
+    node.style = {}
     for property, default_value in INHERITED_PROPERTIES.items():
         if node.parent:
             node.style[property] = node.parent.style[property]
@@ -244,9 +289,43 @@ def style(node, rules):
         node_pct = float(node.style["font-size"][:-1]) / 100
         parent_px = float(parent_font_size[:-2])
         node.style["font-size"] = str(node_pct * parent_px) + "px"
-    
+
+    if old_style:
+        transitions = diff_styles(old_style, node.style)
+        for property, (old_value, new_value, num_frames) \
+            in transitions.items():
+            if property == "opacity":
+                tab.set_needs_render()
+                animation = NumericAnimation(
+                    old_value, new_value, num_frames)
+                node.animations[property] = animation
+                node.style[property] = animation.animate()
+
     for child in node.children:
-        style(child, rules)
+        style(child, rules, tab)
+
+def parse_transition(value):
+    properties = {}
+    if not value: return properties
+    for item in value.split(","):
+        property, duration = item.split(" ", 1)
+        frames = int(float(duration[:-1]) / REFRESH_RATE_SEC)
+        properties[property] = frames
+    return properties
+
+def diff_styles(old_style, new_style):
+    transitions = {}
+    for property, num_frames in \
+        parse_transition(new_style.get("transition")).items():
+        if property not in old_style: continue
+        if property not in new_style: continue
+        old_value = old_style[property]
+        new_value = new_style[property]
+        if old_value == new_value: continue
+        transitions[property] = \
+            (old_value, new_value, num_frames)
+
+    return transitions
 
 def cascade_priority(rule):
     selector, body = rule

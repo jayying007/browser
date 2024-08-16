@@ -3,6 +3,9 @@ class Text:
         self.text = text
         self.children = []
         self.parent = parent
+        self.style = {}
+        self.is_focused = False
+        self.animations = {}
     
     def __repr__(self):
         return repr(self.text)
@@ -13,7 +16,9 @@ class Element:
         self.attributes = attributes
         self.children = []
         self.parent = parent
+        self.style = {}
         self.is_focused = False
+        self.animations = {}
 
     def __repr__(self):
         return "<" + self.tag + ">"
@@ -184,8 +189,8 @@ class CSSParser:
         pairs = {}
         while self.i < len(self.s) and self.s[self.i] != "}":
             try:
-                prop, val = self.pair()
-                pairs[prop] = val
+                prop, val = self.pair([";", "}"])
+                pairs[prop.casefold()] = val
                 self.whitespace()
                 self.literal(";")
                 self.whitespace()
@@ -197,14 +202,20 @@ class CSSParser:
                 else:
                     break
         return pairs
+    
+    def until_chars(self, chars):
+        start = self.i
+        while self.i < len(self.s) and self.s[self.i] not in chars:
+            self.i += 1
+        return self.s[start:self.i]
 
-    def pair(self):
+    def pair(self, until):
         prop = self.word()
         self.whitespace()
         self.literal(":")
         self.whitespace()
-        val = self.word()
-        return prop.casefold(), val
+        val = self.until_chars(until)
+        return prop.casefold(), val.strip()
     
     def ignore_until(self, chars):
         while self.i < len(self.s):
@@ -220,8 +231,13 @@ class CSSParser:
     
     def word(self):
         start = self.i
+        in_quote = False
         while self.i < len(self.s):
-            if self.s[self.i].isalnum() or self.s[self.i] in "#-.%":
+            cur = self.s[self.i]
+            if cur == "'":
+                in_quote = not in_quote
+            if cur.isalnum() or cur in ",/#-.%()\"'" \
+                or (in_quote and cur == ':'):
                 self.i += 1
             else:
                 break
@@ -233,3 +249,12 @@ class CSSParser:
         if not (self.i < len(self.s) and self.s[self.i] == literal):
             raise Exception("Parsing error")
         self.i += 1
+
+def parse_transform(transform_str):
+    if transform_str.find('translate(') < 0:
+        return None
+    left_paren = transform_str.find('(')
+    right_paren = transform_str.find(')')
+    (x_px, y_px) = \
+        transform_str[left_paren + 1:right_paren].split(",")
+    return (float(x_px[:-2]), float(y_px[:-2]))

@@ -182,21 +182,6 @@ class BlockLayout:
         cmds = paint_visual_effects(self.node, cmds, self.self_rect())
         return cmds
     
-def paint_visual_effects(node, cmds, rect):
-    opacity = float(node.style.get("opacity", "1.0"))
-    blend_mode = node.style.get("mix-blend-mode")
-    
-    if node.style.get("overflow", "visible") == "clip":
-        if not blend_mode:
-            blend_mode = "source-over"
-        border_radius = float(node.style.get(
-            "border-radius", "0px")[:-2])
-        cmds.append(Blend(1.0, "destination-in", [
-            DrawRRect(rect, border_radius, "white")
-        ]))
-
-    return [Blend(opacity, blend_mode, cmds)]
-    
 class LineLayout:
     def __init__(self, node, parent, previous):
         self.node = node
@@ -337,3 +322,22 @@ class InputLayout:
     
     def paint_effects(self, cmds):
         return paint_visual_effects(self.node, cmds, self.self_rect())
+    
+
+def paint_visual_effects(node, cmds, rect):
+    opacity = float(node.style.get("opacity", "1.0"))
+    blend_mode = node.style.get("mix-blend-mode")
+    translation = parse_transform(
+        node.style.get("transform", ""))
+
+    if node.style.get("overflow", "visible") == "clip":
+        border_radius = float(node.style.get("border-radius", "0px")[:-2])
+        if not blend_mode:
+            blend_mode = "source-over"
+        cmds.append(Blend(1.0, "destination-in", None, [
+            DrawRRect(rect, border_radius, "white")
+        ]))
+
+    blend_op = Blend(opacity, blend_mode, node, cmds)
+    node.blend_op = blend_op
+    return [Transform(translation, rect, node, [blend_op])]
