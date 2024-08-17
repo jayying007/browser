@@ -15,9 +15,10 @@ def get_tabindex(node):
     return 9999999 if tabindex == 0 else tabindex
 
 class AccessibilityNode:
-    def __init__(self, node):
+    def __init__(self, node, parent=None):
         self.node = node
         self.children = []
+        self.parent = parent
         self.text = ""
         self.bounds = self.compute_bounds()
 
@@ -35,12 +36,30 @@ class AccessibilityNode:
                 self.role = "textbox"
             elif node.tag == "button":
                 self.role = "button"
+            elif node.tag == "img":
+                self.role = "image"
+            elif node.tag == "iframe":
+                self.role = "iframe"
             elif node.tag == "html":
                 self.role = "document"
             elif is_focusable(node):
                 self.role = "focusable"
             else:
                 self.role = "none"
+
+    def absolute_bounds(self):
+        abs_bounds = []
+        for bound in self.bounds:
+            abs_bound = bound.makeOffset(0.0, 0.0)
+            if isinstance(self, FrameAccessibilityNode):
+                obj = self.parent
+            else:
+                obj = self
+            while obj:
+                obj.map_to_parent(abs_bound)
+                obj = obj.parent
+            abs_bounds.append(abs_bound)
+        return abs_bounds
 
     def compute_bounds(self):
         if self.node.layout_object:
@@ -80,6 +99,11 @@ class AccessibilityNode:
             self.text = "Input box: " + value
         elif self.role == "button":
             self.text = "Button"
+        elif self.role == "image":
+            if "alt" in self.node.attributes:
+                self.text = "Image: " + self.node.attributes["alt"]
+            else:
+                self.text = "Image"
         elif self.role == "link":
             self.text = "Link"
         elif self.role == "alert":
@@ -91,7 +115,12 @@ class AccessibilityNode:
             self.text += " is focused"
 
     def build_internal(self, child_node):
-        child = AccessibilityNode(child_node)
+        if isinstance(child_node, Element) \
+            and child_node.tag == "iframe" and child_node.frame \
+            and child_node.frame.loaded:
+            child = FrameAccessibilityNode(child_node, self)
+        else:
+            child = AccessibilityNode(child_node, self)
         if child.role != "none":
             self.children.append(child)
             child.build()
@@ -117,3 +146,32 @@ class AccessibilityNode:
     def __repr__(self):
         return "AccessibilityNode(node={} role={} text={} bounds={}".format(
             str(self.node), self.role, self.text, self.bounds)
+    
+class FrameAccessibilityNode(AccessibilityNode):
+    def __init__(self, node, parent=None):
+        super().__init__(node, parent)
+        self.scroll = self.node.frame.scroll
+        self.zoom = self.node.layout_object.zoom
+
+    def build(self):
+        self.build_internal(self.node.frame.nodes)
+
+    def hit_test(self, x, y):
+        bounds = self.bounds[0]
+        if not bounds.contains(x, y): return
+        new_x = x - bounds.left() - dpx(1, self.zoom)
+        new_y = y - bounds.top() - dpx(1, self.zoom) + self.scroll
+        node = self
+        for child in self.children:
+            res = child.hit_test(new_x, new_y)
+            if res: node = res
+        return node
+
+    def map_to_parent(self, rect):
+        bounds = self.bounds[0]
+        rect.offset(bounds.left(), bounds.top() - self.scroll)
+        rect.intersect(bounds)
+
+    def __repr__(self):
+        return "FrameAccessibilityNode(node={} role={} text={}".format(
+            str(self.node), self.role, self.text)

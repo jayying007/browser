@@ -18,41 +18,45 @@ class Browser:
     def __init__(self):
         self.chrome = Chrome(self)
 
-        self.measure = MeasureTime()
-        
-        threading.current_thread().name = "Browser thread"
-        self.lock = threading.Lock()
-
-        self.active_tab_url = None
-        self.active_tab_scroll = 0
-        self.active_tab_height = 0
-        self.active_tab_display_list = None
-
         self.tabs = []
         self.active_tab = None
         self.focus = None
-        self.tab_focus = None
-        self.last_tab_focus = None
-        self.active_alerts = []
-        self.spoken_alerts = []
         self.address_bar = ""
-        self.dark_mode = False
-        self.needs_accessibility = False
-        self.accessibility_is_on = False
-        self.has_spoken_document = False
-        self.pending_hover = None
-        self.hovered_a11y_node = None
-        self.needs_speak_hovered_node = False
+        self.lock = threading.Lock()
+        self.active_tab_url = None
+        self.active_tab_scroll = 0
 
         self.animation_timer = None
+
         self.needs_animation_frame = False
         self.needs_composite = False
         self.needs_raster = False
         self.needs_draw = False
-        
+        self.needs_accessibility = False
+
+        self.active_tab_height = 0
+        self.active_tab_display_list = None
+
         self.composited_updates = {}
         self.composited_layers = []
         self.draw_list = []
+        self.muted = True
+        self.dark_mode = False
+
+        self.accessibility_is_on = False
+        self.has_spoken_document = False
+        self.pending_hover = None
+        self.hovered_a11y_node = None
+        self.focus_a11y_node = None
+        self.needs_speak_hovered_node = False
+        self.tab_focus = None
+        self.last_tab_focus = None
+        self.active_alerts = []
+        self.spoken_alerts = []
+        self.root_frame_focused = False
+
+        self.measure = MeasureTime()
+        threading.current_thread().name = "Browser thread"
 
         if sdl2.SDL_BYTEORDER == sdl2.SDL_BIG_ENDIAN:
             self.RED_MASK = 0xff000000
@@ -70,19 +74,20 @@ class Browser:
                 sdl2.SDL_WINDOWPOS_CENTERED,
                 WIDTH, HEIGHT,
                 sdl2.SDL_WINDOW_SHOWN | sdl2.SDL_WINDOW_OPENGL)
-        
+
         sdl2.SDL_GL_SetAttribute(sdl2.SDL_GL_CONTEXT_MAJOR_VERSION, 3)
         sdl2.SDL_GL_SetAttribute(sdl2.SDL_GL_CONTEXT_MINOR_VERSION, 2)
         sdl2.SDL_GL_SetAttribute(sdl2.SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG, True)
         sdl2.SDL_GL_SetAttribute(sdl2.SDL_GL_CONTEXT_PROFILE_MASK,
                                     sdl2.SDL_GL_CONTEXT_PROFILE_CORE)
-        
-        self.gl_context = sdl2.SDL_GL_CreateContext(self.sdl_window)
+
+        self.gl_context = sdl2.SDL_GL_CreateContext(
+            self.sdl_window)
         print(("OpenGL initialized: vendor={}," + \
             "renderer={}").format(
             OpenGL.GL.glGetString(OpenGL.GL.GL_VENDOR),
             OpenGL.GL.glGetString(OpenGL.GL.GL_RENDERER)))
-        
+
         self.skia_context = skia.GrDirectContext.MakeGL()
 
         self.root_surface = \
@@ -90,8 +95,7 @@ class Browser:
             self.skia_context,
             skia.GrBackendRenderTarget(
                 WIDTH, HEIGHT, 0, 0, 
-                skia.GrGLFramebufferInfo(
-                    0, OpenGL.GL.GL_RGBA8)),
+                skia.GrGLFramebufferInfo(0, OpenGL.GL.GL_RGBA8)),
                 skia.kBottomLeft_GrSurfaceOrigin,
                 skia.kRGBA_8888_ColorType,
                 skia.ColorSpace.MakeSRGB())
@@ -99,8 +103,7 @@ class Browser:
 
         self.chrome_surface = skia.Surface.MakeRenderTarget(
                 self.skia_context, skia.Budgeted.kNo,
-                skia.ImageInfo.MakeN32Premul(
-                    WIDTH, math.ceil(self.chrome.bottom)))
+                skia.ImageInfo.MakeN32Premul(WIDTH, math.ceil(self.chrome.bottom)))
         assert self.chrome_surface is not None
     # 创建一个新Tab
     def new_tab(self, url):
@@ -124,7 +127,7 @@ class Browser:
         self.active_tab = tab
         task = Task(self.active_tab.set_dark_mode, self.dark_mode)
         self.active_tab.task_runner.schedule_task(task)
-        task = Task(self.active_tab.set_needs_paint)
+        task = Task(self.active_tab.set_needs_render_all_frames)
         self.active_tab.task_runner.schedule_task(task)
 
         self.clear_data()
@@ -339,6 +342,7 @@ class Browser:
             self.active_tab_url = data.url
             if data.scroll != None:
                 self.active_tab_scroll = data.scroll
+            self.root_frame_focused = data.root_frame_focused
             self.active_tab_height = data.height
             if data.display_list:
                 self.active_tab_display_list = data.display_list
@@ -347,7 +351,6 @@ class Browser:
             self.accessibility_tree = data.accessibility_tree
             if self.accessibility_tree:
                 self.set_needs_accessibility()
-            self.tab_focus = data.focus
             if self.composited_updates == None:
                 self.composited_updates = {}
                 self.set_needs_composite()
@@ -407,12 +410,18 @@ class Browser:
 
     def handle_down(self):
         self.lock.acquire(blocking=True)
-        if not self.active_tab_height:
+        if self.root_frame_focused:
+            if not self.active_tab_height:
+                self.lock.release()
+                return
+            self.active_tab_scroll = \
+                self.clamp_scroll(self.active_tab_scroll + SCROLL_STEP)
+            self.set_needs_draw()
+            self.needs_animation_frame = True
             self.lock.release()
             return
-        self.active_tab_scroll = self.clamp_scroll(
-            self.active_tab_scroll + SCROLL_STEP)
-        self.set_needs_draw()
+        task = Task(self.active_tab.scrolldown)
+        self.active_tab.task_runner.schedule_task(task)
         self.needs_animation_frame = True
         self.lock.release()
 

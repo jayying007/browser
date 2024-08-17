@@ -226,6 +226,25 @@ class DrawCompositedLayer(PaintCommand):
     def __repr__(self):
         return "DrawCompositedLayer()"
 
+class DrawImage(PaintCommand):
+    def __init__(self, image, rect, quality):
+        super().__init__(rect)
+        self.image = image
+        self.quality = parse_image_rendering(quality)
+
+    def execute(self, canvas):
+        if int(skia.__version__.split(".")[0]) > 87:
+            canvas.drawImageRect(self.image, self.rect, self.quality)
+            return
+
+        paint = skia.Paint(
+            FilterQuality=self.quality,
+        )
+        canvas.drawImageRect(self.image, self.rect, paint)
+
+    def __repr__(self):
+        return "DrawImage(rect={})".format(
+            self.rect)
 
 class CompositedLayer:
     def __init__(self, skia_context, display_item):
@@ -291,10 +310,11 @@ class CompositedLayer:
             self.display_items if len(self.display_items) > 0 else 'None')
 
 class CommitData:
-    def __init__(self, url, scroll, height, display_list,
-                 composited_updates, accessibility_tree, focus):
+    def __init__(self, url, scroll, root_frame_focused, height,
+        display_list, composited_updates, accessibility_tree, focus):
         self.url = url
         self.scroll = scroll
+        self.root_frame_focused = root_frame_focused
         self.height = height
         self.display_list = display_list
         self.composited_updates = composited_updates

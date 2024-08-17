@@ -103,3 +103,21 @@ def absolute_to_local(display_item, rect):
 
 def dpx(css_px, zoom):
     return css_px * zoom
+
+def parse_image_rendering(quality):
+    if int(skia.__version__.split(".")[0]) > 87:
+        if quality == "high-quality":
+            return skia.SamplingOptions(skia.CubicResampler.Mitchell())
+        elif quality == "crisp-edges":
+            return skia.SamplingOptions(
+                skia.FilterMode.kNearest, skia.MipmapMode.kNone)
+        else:
+            return skia.SamplingOptions(
+                skia.FilterMode.kLinear, skia.MipmapMode.kLinear)
+
+    if quality == "high-quality":
+        return skia.FilterQuality.kHigh_FilterQuality
+    elif quality == "crisp-edges":
+        return skia.FilterQuality.kLow_FilterQuality
+    else:
+        return skia.FilterQuality.kMedium_FilterQuality
