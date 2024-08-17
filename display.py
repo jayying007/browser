@@ -291,13 +291,15 @@ class CompositedLayer:
             self.display_items if len(self.display_items) > 0 else 'None')
 
 class CommitData:
-    def __init__(self, url, scroll, height,
-        display_list, composited_updates):
+    def __init__(self, url, scroll, height, display_list,
+                 composited_updates, accessibility_tree, focus):
         self.url = url
         self.scroll = scroll
         self.height = height
         self.display_list = display_list
         self.composited_updates = composited_updates
+        self.accessibility_tree = accessibility_tree
+        self.focus = focus
 
 class NumericAnimation:
     def __init__(self, old_value, new_value, num_frames):

@@ -24,6 +24,7 @@ class JSContext:
         self.interp.export_function("log", print)
         self.interp.export_function("querySelectorAll", self.querySelectorAll)
         self.interp.export_function("getAttribute", self.getAttribute)
+        self.interp.export_function("setAttribute", self.setAttribute)
         self.interp.export_function("innerHTML_set", self.innerHTML_set)
         self.interp.export_function("style_set", self.style_set)
         self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)
@@ -55,6 +56,11 @@ class JSContext:
         elt = self.handle_to_node[handle]
         attr = elt.attributes.get(attr, None)
         return attr if attr else ""
+    
+    def setAttribute(self, handle, attr, value):
+        elt = self.handle_to_node[handle]
+        elt.attributes[attr] = value
+        self.tab.set_needs_render()
     
     def dispatch_event(self, type, elt):
         handle = self.node_to_handle.get(elt, -1)

@@ -3,6 +3,9 @@ import sdl2
 import skia
 import math
 import OpenGL.GL
+import os
+import gtts
+import playsound
 from chrome import *
 from tab import *
 from network import *
@@ -28,7 +31,18 @@ class Browser:
         self.tabs = []
         self.active_tab = None
         self.focus = None
+        self.tab_focus = None
+        self.last_tab_focus = None
+        self.active_alerts = []
+        self.spoken_alerts = []
         self.address_bar = ""
+        self.dark_mode = False
+        self.needs_accessibility = False
+        self.accessibility_is_on = False
+        self.has_spoken_document = False
+        self.pending_hover = None
+        self.hovered_a11y_node = None
+        self.needs_speak_hovered_node = False
 
         self.animation_timer = None
         self.needs_animation_frame = False
@@ -108,6 +122,11 @@ class Browser:
 
     def set_active_tab(self, tab):
         self.active_tab = tab
+        task = Task(self.active_tab.set_dark_mode, self.dark_mode)
+        self.active_tab.task_runner.schedule_task(task)
+        task = Task(self.active_tab.set_needs_paint)
+        self.active_tab.task_runner.schedule_task(task)
+
         self.clear_data()
         self.needs_animation_frame = True
         self.animation_timer = None
@@ -118,6 +137,7 @@ class Browser:
         self.display_list = []
         self.composited_layers = []
         self.composited_updates = {}
+        self.accessibility_tree = None
 
     ##########################
     # 渲染
@@ -136,7 +156,10 @@ class Browser:
 
     def composite_raster_and_draw(self):
         self.lock.acquire(blocking=True)
-        if not self.needs_composite and not self.needs_raster and not self.needs_draw:
+        if not self.needs_composite and \
+            len(self.composited_updates) == 0 \
+            and not self.needs_raster and not self.needs_draw and not \
+            self.needs_accessibility:
             self.lock.release()
             return
 
@@ -156,9 +179,14 @@ class Browser:
             self.draw()
             self.measure.stop('draw')
         self.measure.stop('composite_raster_and_draw')
+
+        if self.needs_accessibility:
+            self.update_accessibility()
+
         self.needs_composite = False
         self.needs_raster = False
         self.needs_draw = False
+        self.needs_accessibility = False
         self.lock.release()
 
     def composite(self):
@@ -201,7 +229,11 @@ class Browser:
 
     def raster_chrome(self):
         canvas = self.chrome_surface.getCanvas()
-        canvas.clear(skia.ColorWHITE)
+        if self.dark_mode:
+            background_color = skia.ColorBLACK
+        else:
+            background_color = skia.ColorWHITE
+        canvas.clear(background_color)
 
         for cmd in self.chrome.paint():
             cmd.execute(canvas)
@@ -232,6 +264,23 @@ class Browser:
             if not parent:
                 self.draw_list.append(current_effect)
 
+        if self.pending_hover:
+            (x, y) = self.pending_hover
+            y += self.active_tab_scroll
+            a11y_node = self.accessibility_tree.hit_test(x, y)
+            if a11y_node:
+                if not self.hovered_a11y_node or \
+                    a11y_node.node != self.hovered_a11y_node.node:
+                    self.needs_speak_hovered_node = True
+                self.hovered_a11y_node = a11y_node
+        self.pending_hover = None
+
+        if self.hovered_a11y_node:
+            for bound in self.hovered_a11y_node.bounds:
+                self.draw_list.append(DrawOutline(
+                    bound,
+                    "white" if self.dark_mode else "black", 2))
+
     def get_latest(self, effect):
         node = effect.node
         if node not in self.composited_updates:
@@ -242,7 +291,10 @@ class Browser:
 
     def draw(self):
         canvas = self.root_surface.getCanvas()
-        canvas.clear(skia.ColorWHITE)
+        if self.dark_mode:
+            canvas.clear(skia.ColorBLACK)
+        else:
+            canvas.clear(skia.ColorWHITE)
 
         canvas.save()
         canvas.translate(0, self.chrome.bottom - self.active_tab_scroll)
@@ -292,6 +344,10 @@ class Browser:
                 self.active_tab_display_list = data.display_list
             self.animation_timer = None
             self.composited_updates = data.composited_updates
+            self.accessibility_tree = data.accessibility_tree
+            if self.accessibility_tree:
+                self.set_needs_accessibility()
+            self.tab_focus = data.focus
             if self.composited_updates == None:
                 self.composited_updates = {}
                 self.set_needs_composite()
@@ -339,6 +395,9 @@ class Browser:
         self.lock.acquire(blocking=True)
         if self.chrome.enter():
             self.set_needs_raster()
+        elif self.focus == "content":
+            task = Task(self.active_tab.enter)
+            self.active_tab.task_runner.schedule_task(task)
         self.lock.release()
 
     def clamp_scroll(self, scroll):
@@ -357,8 +416,145 @@ class Browser:
         self.needs_animation_frame = True
         self.lock.release()
 
+    def increment_zoom(self, increment):
+        task = Task(self.active_tab.zoom_by, increment)
+        self.active_tab.task_runner.schedule_task(task)
+
+    def reset_zoom(self):
+        task = Task(self.active_tab.reset_zoom)
+        self.active_tab.task_runner.schedule_task(task)
+
+    def toggle_dark_mode(self):
+        self.lock.acquire(blocking=True)
+        self.dark_mode = not self.dark_mode
+        task = Task(self.active_tab.set_dark_mode, self.dark_mode)
+        self.active_tab.task_runner.schedule_task(task)
+        self.lock.release()
+
+    def go_back(self):
+        task = Task(self.active_tab.go_back)
+        self.active_tab.task_runner.schedule_task(task)
+        self.clear_data()
+
+    def focus_addressbar(self):
+        self.lock.acquire(blocking=True)
+        self.focus = None
+        self.chrome.focus_addressbar()
+        text = "Address bar focused"
+        if self.accessibility_is_on:
+            speak_text(text)
+        self.set_needs_raster()
+        self.lock.release()
+
+    def focus_content(self):
+        self.lock.acquire(blocking=True)
+        self.chrome.blur()
+        self.focus = "content"
+        self.lock.release()
+
+    def cycle_tabs(self):
+        self.lock.acquire(blocking=True)
+        active_idx = self.tabs.index(self.active_tab)
+        new_active_idx = (active_idx + 1) % len(self.tabs)
+        self.set_active_tab(self.tabs[new_active_idx])
+        self.lock.release()
+
+    def handle_tab(self):
+        self.focus = "content"
+        task = Task(self.active_tab.advance_tab)
+        self.active_tab.task_runner.schedule_task(task)
+
+    def toggle_accessibility(self):
+        self.lock.acquire(blocking=True)
+        self.accessibility_is_on = not self.accessibility_is_on
+        self.set_needs_accessibility()
+        self.lock.release()
+
+    def set_needs_accessibility(self):
+        if not self.accessibility_is_on:
+            return
+        self.needs_accessibility = True
+        self.needs_draw = True
+
+        self.active_tab_height = 0
+        for layer in self.composited_layers:
+            self.active_tab_height = \
+                max(self.active_tab_height,
+                    layer.absolute_bounds().bottom())
+
+    def update_accessibility(self):
+        if not self.accessibility_tree: return
+
+        if not self.has_spoken_document:
+            self.speak_document()
+            self.has_spoken_document = True
+
+        self.active_alerts = [
+            node for node in tree_to_list(
+                self.accessibility_tree, [])
+            if node.role == "alert"
+        ]
+
+        for alert in self.active_alerts:
+            if alert not in self.spoken_alerts:
+                self.speak_node(alert, "New alert")
+                self.spoken_alerts.append(alert)
+
+        new_spoken_alerts = []
+        for old_node in self.spoken_alerts:
+            new_nodes = [
+                node for node in tree_to_list(
+                    self.accessibility_tree, [])
+                if node.node == old_node.node
+                and node.role == "alert"
+            ]
+            if new_nodes:
+                new_spoken_alerts.append(new_nodes[0])
+        self.spoken_alerts = new_spoken_alerts
+
+        if self.tab_focus and \
+            self.tab_focus != self.last_tab_focus:
+            nodes = [node for node in tree_to_list(
+                self.accessibility_tree, [])
+                        if node.node == self.tab_focus]
+            if nodes:
+                self.focus_a11y_node = nodes[0]
+                self.speak_node(
+                    self.focus_a11y_node, "element focused ")
+            self.last_tab_focus = self.tab_focus
+
+        if self.needs_speak_hovered_node:
+            self.speak_node(self.hovered_a11y_node, "Hit test ")
+        self.needs_speak_hovered_node = False
+
+    def speak_document(self):
+        text = "Here are the document contents: "
+        tree_list = tree_to_list(self.accessibility_tree, [])
+        for accessibility_node in tree_list:
+            new_text = accessibility_node.text
+            if new_text:
+                text += "\n"  + new_text
+
+        speak_text(text)
+
+    def speak_node(self, node, text):
+        text += node.text
+        if text and node.children and \
+            node.children[0].role == "StaticText":
+            text += " " + \
+            node.children[0].text
+
+        speak_text(text)
+
+    def handle_hover(self, event):
+        if not self.accessibility_is_on or not self.accessibility_tree:
+            return
+        self.pending_hover = (event.x, event.y - self.chrome.bottom)
+        self.set_needs_accessibility()
+
 def mainloop(browser: Browser):
     event = sdl2.SDL_Event()
+    ctrl_down = False
     while True:
         if sdl2.SDL_PollEvent(ctypes.byref(event)) != 0:
             if event.type == sdl2.SDL_QUIT:
@@ -367,15 +563,57 @@ def mainloop(browser: Browser):
                 sys.exit()
             elif event.type == sdl2.SDL_MOUSEBUTTONUP:
                 browser.handle_click(event.button)
+            elif event.type == sdl2.SDL_MOUSEMOTION:
+                browser.handle_hover(event.motion)
             elif event.type == sdl2.SDL_KEYDOWN:
-                if event.key.keysym.sym == sdl2.SDLK_RETURN:
+                if ctrl_down:
+                    if event.key.keysym.sym == sdl2.SDLK_EQUALS:
+                        browser.increment_zoom(True)
+                    elif event.key.keysym.sym == sdl2.SDLK_MINUS:
+                        browser.increment_zoom(False)
+                    elif event.key.keysym.sym == sdl2.SDLK_0:
+                        browser.reset_zoom()
+                    elif event.key.keysym.sym == sdl2.SDLK_LEFT:
+                        browser.go_back()
+                    elif event.key.keysym.sym == sdl2.SDLK_l:
+                        browser.focus_addressbar()
+                    elif event.key.keysym.sym == sdl2.SDLK_a:
+                        browser.toggle_accessibility()
+                    elif event.key.keysym.sym == sdl2.SDLK_d:
+                        browser.toggle_dark_mode()
+                    elif event.key.keysym.sym == sdl2.SDLK_t:
+                        browser.new_tab( "https://browser.engineering/")
+                    elif event.key.keysym.sym == sdl2.SDLK_TAB:
+                        browser.cycle_tabs()
+                    elif event.key.keysym.sym == sdl2.SDLK_q:
+                        browser.handle_quit()
+                        sdl2.SDL_Quit()
+                        sys.exit()
+                elif event.key.keysym.sym == sdl2.SDLK_RETURN:
                     browser.handle_enter()
                 elif event.key.keysym.sym == sdl2.SDLK_DOWN:
                     browser.handle_down()
-            elif event.type == sdl2.SDL_TEXTINPUT:
+                elif event.key.keysym.sym == sdl2.SDLK_TAB:
+                    browser.handle_tab()
+                elif event.key.keysym.sym == sdl2.SDLK_RCTRL or \
+                    event.key.keysym.sym == sdl2.SDLK_LCTRL:
+                    ctrl_down = True
+            elif event.type == sdl2.SDL_KEYUP:
+                if event.key.keysym.sym == sdl2.SDLK_RCTRL or \
+                    event.key.keysym.sym == sdl2.SDLK_LCTRL:
+                    ctrl_down = False
+            elif event.type == sdl2.SDL_TEXTINPUT and not ctrl_down:
                 browser.handle_key(event.text.text.decode('utf8'))
         browser.composite_raster_and_draw()
         browser.schedule_animation_frame()
+
+SPEECH_FILE = "/tmp/speech-fragment.mp3"
+def speak_text(text):
+    print("SPEAK:", text)
+    # tts = gtts.gTTS(text)
+    # tts.save(SPEECH_FILE)
+    # playsound.playsound(SPEECH_FILE)
+    # os.remove(SPEECH_FILE)
 
 if __name__ == "__main__":
     import sys

@@ -28,13 +28,14 @@ class DocumentLayout:
         self.parent = None
         self.children = []
 
-    def layout(self):
+    def layout(self, zoom):
+        self.zoom = zoom
         child = BlockLayout(self.node, self, None)
         self.children.append(child)
 
-        self.width = WIDTH - 2*HSTEP
-        self.x = HSTEP
-        self.y = VSTEP
+        self.width = WIDTH - 2 * dpx(HSTEP, self.zoom)
+        self.x = dpx(HSTEP, self.zoom)
+        self.y = dpx(VSTEP, self.zoom)
         child.layout()
         self.height = child.height
 
@@ -62,6 +63,7 @@ class BlockLayout:
         self.parent = parent
         self.previous = previous
         self.children = []
+        node.layout_object = self
 
         self.x = None
         self.y = None
@@ -69,6 +71,7 @@ class BlockLayout:
         self.height = None
 
     def layout(self):
+        self.zoom = self.parent.zoom
         self.x = self.parent.x
         self.width = self.parent.width
         if self.previous:
@@ -108,7 +111,8 @@ class BlockLayout:
         weight = node.style["font-weight"]
         style = node.style["font-style"]
         if style == "normal": style = "roman"
-        size = int(float(node.style["font-size"][:-2]) * .75)
+        px_size = float(node.style["font-size"][:-2])
+        size = dpx(px_size * 0.75, self.zoom)
 
         font = get_font(size, weight, style)
         w = font.measureText(word)
@@ -128,7 +132,7 @@ class BlockLayout:
         self.children.append(new_line)
 
     def input(self, node):
-        w = INPUT_WIDTH_PX
+        w = dpx(INPUT_WIDTH_PX, self.zoom)
         if self.cursor_x + w > self.width:
             self.new_line()
         line = self.children[-1]
@@ -139,7 +143,8 @@ class BlockLayout:
         weight = node.style["font-weight"]
         style = node.style["font-style"]
         if style == "normal": style = "roman"
-        size = int(float(node.style["font-size"][:-2]) * .75)
+        px_size = float(node.style["font-size"][:-2])
+        size = dpx(px_size * 0.75, self.zoom)
         font = get_font(size, weight, style)
 
         self.cursor_x += w + font.measureText(" ")
@@ -170,9 +175,9 @@ class BlockLayout:
 
         bgcolor = self.node.style.get("background-color", "transparent")
         if bgcolor != "transparent":
-            radius = float(
-                self.node.style.get(
-                    "border-radius", "0px")[:-2])
+            radius = dpx(
+                float(self.node.style.get("border-radius", "0px")[:-2]),
+                    self.zoom)
             cmds.append(DrawRRect(
                 self.self_rect(), radius, bgcolor))
 
@@ -190,6 +195,7 @@ class LineLayout:
         self.children = []
 
     def layout(self):
+        self.zoom = self.parent.zoom
         self.width = self.parent.width
         self.x = self.parent.x
 
@@ -222,6 +228,18 @@ class LineLayout:
         return []
     
     def paint_effects(self, cmds):
+        outline_rect = skia.Rect.MakeEmpty()
+        outline_node = None
+        for child in self.children:
+            outline_str = child.node.parent.style.get("outline")
+            if parse_outline(outline_str):
+                outline_rect.join(child.self_rect())
+                outline_node = child.node.parent
+
+        if outline_node:
+            paint_outline(
+                outline_node, cmds, outline_rect, self.zoom)
+
         return cmds
 
 class TextLayout:
@@ -233,10 +251,12 @@ class TextLayout:
         self.previous = previous
 
     def layout(self):
+        self.zoom = self.parent.zoom
         weight = self.node.style["font-weight"]
         style = self.node.style["font-style"]
         if style == "normal": style = "roman"
-        size = int(float(self.node.style["font-size"][:-2]) * .75)
+        px_size = float(self.node.style["font-size"][:-2])
+        size = dpx(px_size * 0.75, self.zoom)
         self.font = get_font(size, weight, style)
 
         self.width = self.font.measureText(self.word)
@@ -260,6 +280,11 @@ class TextLayout:
     
     def paint_effects(self, cmds):
         return cmds
+    
+    def self_rect(self):
+        return skia.Rect.MakeLTRB(
+            self.x, self.y, self.x + self.width,
+            self.y + self.height)
 
 INPUT_WIDTH_PX = 200
 class InputLayout:
@@ -270,10 +295,12 @@ class InputLayout:
         self.previous = previous
 
     def layout(self):
+        self.zoom = self.parent.zoom
         weight = self.node.style["font-weight"]
         style = self.node.style["font-style"]
         if style == "normal": style = "roman"
-        size = int(float(self.node.style["font-size"][:-2]) * .75)
+        px_size = float(self.node.style["font-size"][:-2])
+        size = dpx(px_size * 0.75, self.zoom)
         self.font = get_font(size, weight, style)
 
         self.width = INPUT_WIDTH_PX
@@ -313,7 +340,7 @@ class InputLayout:
         color = self.node.style["color"]
         cmds.append(DrawText(self.x, self.y, text, self.font, color))
         # 绘制光标
-        if self.node.is_focused:
+        if self.node.is_focused and self.node.tag == "input":
             cx = self.x + self.font.measureText(text)
             cmds.append(DrawLine(
                 cx, self.y, cx, self.y + self.height, "black", 1))
@@ -321,8 +348,22 @@ class InputLayout:
         return cmds
     
     def paint_effects(self, cmds):
-        return paint_visual_effects(self.node, cmds, self.self_rect())
-    
+        cmds = paint_visual_effects(self.node, cmds, self.self_rect())
+        paint_outline(self.node, cmds, self.self_rect(), self.zoom)
+        return cmds
+
+def paint_outline(node, cmds, rect, zoom):
+    outline = parse_outline(node.style.get("outline"))
+    if not outline: return
+    thickness, color = outline
+    cmds.append(DrawOutline(rect, color, dpx(thickness, zoom)))
+
+def parse_outline(outline_str):
+    if not outline_str: return None
+    values = outline_str.split(" ")
+    if len(values) != 3: return None
+    if values[1] != "solid": return None
+    return int(values[0][:-2]), values[2]
 
 def paint_visual_effects(node, cmds, rect):
     opacity = float(node.style.get("opacity", "1.0"))

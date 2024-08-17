@@ -6,6 +6,7 @@ class Text:
         self.style = {}
         self.is_focused = False
         self.animations = {}
+        self.layout_object = None
     
     def __repr__(self):
         return repr(self.text)
@@ -19,6 +20,7 @@ class Element:
         self.style = {}
         self.is_focused = False
         self.animations = {}
+        self.layout_object = None
 
     def __repr__(self):
         return "<" + self.tag + ">"
@@ -150,6 +152,23 @@ class DescendantSelector:
             node = node.parent
         return False
 
+class PseudoclassSelector:
+    def __init__(self, pseudoclass, base):
+        self.pseudoclass = pseudoclass
+        self.base = base
+        self.priority = self.base.priority
+
+    def matches(self, node):
+        if not self.base.matches(node):
+            return False
+        if self.pseudoclass == "focus":
+            return node.is_focused
+        else:
+            return False
+        
+    def __repr__(self):
+        return "PseudoclassSelector({}, {})".format(self.pseudoclass, self.base)
+
 class CSSParser:
     def __init__(self, s):
         self.s = s
@@ -157,15 +176,30 @@ class CSSParser:
 
     def parse(self):
         rules = []
+        media = None
+        self.whitespace()
         while self.i < len(self.s):
             try:
-                self.whitespace()
-                selector = self.selector()
-                self.literal("{")
-                self.whitespace()
-                body = self.body()
-                self.literal("}")
-                rules.append((selector, body))
+                if self.s[self.i] == "@" and not media:
+                    prop, val = self.media_query()
+                    if prop == "prefers-color-scheme" and \
+                        val in ["dark", "light"]:
+                        media = val
+                    self.whitespace()
+                    self.literal("{")
+                    self.whitespace()
+                elif self.s[self.i] == "}" and media:
+                    self.literal("}")
+                    media = None
+                    self.whitespace()
+                else:
+                    selector = self.selector()
+                    self.literal("{")
+                    self.whitespace()
+                    body = self.body()
+                    self.literal("}")
+                    self.whitespace()
+                    rules.append((media, selector, body))
             except Exception:
                 why = self.ignore_until(["}"])
                 if why == "}":
@@ -176,13 +210,20 @@ class CSSParser:
         return rules
 
     def selector(self):
-        out = TagSelector(self.word().casefold())
+        out = self.simple_selector()
         self.whitespace()
         while self.i < len(self.s) and self.s[self.i] != "{":
-            tag = self.word()
-            descendant = TagSelector(tag.casefold())
+            descendant = self.simple_selector()
             out = DescendantSelector(out, descendant)
             self.whitespace()
+        return out
+    
+    def simple_selector(self):
+        out = TagSelector(self.word().casefold())
+        if self.i < len(self.s) and self.s[self.i] == ":":
+            self.literal(":")
+            pseudoclass = self.word().casefold()
+            out = PseudoclassSelector(pseudoclass, out)
         return out
 
     def body(self):
@@ -216,6 +257,17 @@ class CSSParser:
         self.whitespace()
         val = self.until_chars(until)
         return prop.casefold(), val.strip()
+    
+    def media_query(self):
+        self.literal("@")
+        assert self.word() == "media"
+        self.whitespace()
+        self.literal("(")
+        self.whitespace()
+        prop, val = self.pair([")"])
+        self.whitespace()
+        self.literal(")")
+        return prop, val
     
     def ignore_until(self, chars):
         while self.i < len(self.s):

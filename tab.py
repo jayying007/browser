@@ -9,6 +9,7 @@ from script import *
 from util import *
 from task import *
 from measure import *
+from accessibility import *
 
 DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
 
@@ -22,13 +23,19 @@ class Tab:
         self.scroll = 0
         self.scroll_changed_in_tab = False
         self.tab_height = tab_height
+        self.zoom = 1
+        self.needs_focus_scroll = False
         # 当前焦点  
         self.focus = None
         self.browser = browser
+        self.dark_mode = browser.dark_mode
 
         self.needs_style = False
         self.needs_layout = False
         self.needs_paint = False
+
+        self.needs_accessibility = False
+        self.accessibility_tree = None
         
         self.js = None
         self.task_runner = TaskRunner(self)
@@ -43,6 +50,9 @@ class Tab:
         self.loaded = False
         self.scroll = 0
         self.scroll_changed_in_tab = True;
+        self.zoom = 1
+        self.focus_element(None)
+        self.accessibility_tree = None
 
         self.task_runner.clear_pending_tasks()
 
@@ -120,15 +130,24 @@ class Tab:
         self.browser.measure.time('render')
 
         if self.needs_style:
+            if self.dark_mode:
+                INHERITED_PROPERTIES["color"] = "white"
+            else:
+                INHERITED_PROPERTIES["color"] = "black"
             style(self.nodes, sorted(self.rules, key=cascade_priority), self)
             self.needs_layout = True
             self.needs_style = False
         # 布局树
         if self.needs_layout:
             self.document = DocumentLayout(self.nodes)
-            self.document.layout()
+            self.document.layout(self.zoom)
+            self.needs_accessibility = True
             self.needs_paint = True
             self.needs_layout = False
+        if self.needs_accessibility:
+            self.accessibility_tree = AccessibilityNode(self.nodes)
+            self.accessibility_tree.build()
+            self.needs_accessibility = False
         # 绘图
         if self.needs_paint:
             self.display_list = []
@@ -162,9 +181,14 @@ class Tab:
 
         self.render()
 
+        if self.needs_focus_scroll and self.focus:
+            self.scroll_to(self.focus)
+        self.needs_focus_scroll = False
+
         scroll = None
         if self.scroll_changed_in_tab:
             scroll = self.scroll
+
         composited_updates = None
         if not needs_composite:
             composited_updates = {}
@@ -174,12 +198,13 @@ class Tab:
 
         document_height = math.ceil(self.document.height + 2*VSTEP)
         commit_data = CommitData(
-            self.url, scroll, document_height,
-            self.display_list,
+            self.url, scroll, document_height, self.display_list,
             composited_updates,
-        )
+            self.accessibility_tree,
+            self.focus)
         self.display_list = None
         self.scroll_changed_in_tab = False
+        self.accessibility_tree = None
 
         self.browser.commit(self, commit_data)
 
@@ -195,7 +220,7 @@ class Tab:
         # we need to read the layout tree to figure out what object was clicked on,
         # which means the layout tree needs to be up to date.
         self.render()
-        self.focus = None
+        self.focus_element(None)
 
         y += self.scroll
         loc_rect = skia.Rect.MakeXYWH(x, y, 1, 1)
@@ -210,23 +235,10 @@ class Tab:
         while elt:
             if isinstance(elt, Text):
                 pass
-            elif elt.tag == "a" and "href" in elt.attributes:
-                url = self.url.resolve(elt.attributes["href"])
-                self.load(url)
+            elif is_focusable(elt):
+                self.focus_element(elt)
+                self.activate_element(elt)
                 return
-            elif elt.tag == "input":
-                elt.attributes["value"] = ""
-                if self.focus:
-                    self.focus.is_focused = False
-                self.focus = elt
-                elt.is_focused = True
-                self.set_needs_render()
-                return
-            elif elt.tag == "button":
-                while elt.parent:
-                    if elt.tag == "form" and "action" in elt.attributes:
-                        return self.submit_form(elt)
-                    elt = elt.parent
             elt = elt.parent
 
     def submit_form(self, elt):
@@ -255,11 +267,97 @@ class Tab:
             self.load(back)
 
     def keypress(self, char):
-        if self.focus:
+        if self.focus and self.focus.tag == "input":
+            if not "value" in self.focus.attributes:
+                self.activate_element(self.focus)
             if self.js.dispatch_event("keydown", self.focus): return
             self.focus.attributes["value"] += char
             self.set_needs_render()
 
+    def zoom_by(self, increment):
+        if increment:
+            self.zoom *= 1.1
+            self.scroll *= 1.1
+        else:
+            self.zoom *= 1/1.1
+            self.scroll *= 1/1.1
+        self.scroll_changed_in_tab = True
+        self.set_needs_render()
+
+    def reset_zoom(self):
+        self.scroll /= self.zoom
+        self.zoom = 1
+        self.scroll_changed_in_tab = True
+        self.set_needs_render()
+
+    def set_dark_mode(self, val):
+        self.dark_mode = val
+        self.set_needs_render()
+
+    def advance_tab(self):
+        focusable_nodes = [node
+            for node in tree_to_list(self.nodes, [])
+            if isinstance(node, Element) and is_focusable(node)]
+        focusable_nodes.sort(key=get_tabindex)
+
+        if self.focus in focusable_nodes:
+            idx = focusable_nodes.index(self.focus) + 1
+        else:
+            idx = 0
+
+        if idx < len(focusable_nodes):
+            self.focus_element(focusable_nodes[idx])
+            self.browser.focus_content()
+        else:
+            self.focus_element(None)
+            self.browser.focus_addressbar()
+        self.set_needs_render()
+
+    def enter(self):
+        if not self.focus: return
+        if self.js.dispatch_event("click", self.focus): return
+        self.activate_element(self.focus)
+
+    def activate_element(self, elt):
+        if elt.tag == "input":
+            elt.attributes["value"] = ""
+            self.set_needs_render()
+        elif elt.tag == "a" and "href" in elt.attributes:
+            url = self.url.resolve(elt.attributes["href"])
+            self.load(url)
+        elif elt.tag == "button":
+            while elt:
+                if elt.tag == "form" and "action" in elt.attributes:
+                    self.submit_form(elt)
+                    return
+                elt = elt.parent
+
+    def focus_element(self, node):
+        if node and node != self.focus:
+            self.needs_focus_scroll = True
+        if self.focus:
+            self.focus.is_focused = False
+        self.focus = node
+        if node:
+            node.is_focused = True
+        self.set_needs_render()
+
+    def scroll_to(self, elt):
+        assert not (self.needs_style or self.needs_layout)
+        objs = [
+            obj for obj in tree_to_list(self.document, [])
+            if obj.node == self.focus
+        ]
+        if not objs: return
+        obj = objs[0]
+
+        if self.scroll < obj.y < self.scroll + self.tab_height:
+            return
+
+        document_height = math.ceil(self.document.height + 2*VSTEP)
+        new_scroll = obj.y - SCROLL_STEP
+        self.scroll = self.clamp_scroll(new_scroll)
+        self.scroll_changed_in_tab = True
 
 def style(node, rules, tab):
     old_style = node.style
@@ -271,7 +369,9 @@ def style(node, rules, tab):
         else:
             node.style[property] = default_value
 
-    for selector, body in rules:
+    for media, selector, body in rules:
+        if media:
+            if (media == "dark") != tab.dark_mode: continue
         if not selector.matches(node): continue
         for property, value in body.items():
             node.style[property] = value
@@ -328,7 +428,7 @@ def diff_styles(old_style, new_style):
     return transitions
 
 def cascade_priority(rule):
-    selector, body = rule
+    media, selector, body = rule
     return selector.priority
 
 def print_tree(node, indent=0):
