@@ -101,6 +101,9 @@ class Blend(VisualEffect):
             args = ", <no-op>"
         return "Blend({})".format(args[2:])
 
+def DrawCursor(elt, offset):
+    x = elt.x.get() + offset
+    return DrawLine(x, elt.y.get(), x, elt.y.get() + elt.height.get(), "red", 1)
 
 class PaintCommand:
     def __init__(self, rect):

@@ -2,7 +2,7 @@ import skia
 from network import *
 from parser import *
 from layout import *
-from config import *
+from constant import *
 from display import *
 from script import *
 from util import *

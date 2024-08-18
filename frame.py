@@ -5,9 +5,10 @@ from parser import *
 from layout import *
 from display import *
 from util import *
-from config import *
+from constant import *
 from task import *
 from accessibility import *
+from protected_field import *
 
 DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
 
@@ -143,6 +144,7 @@ class Frame:
             task = Task(iframe.frame.load, document_url)
             self.tab.task_runner.schedule_task(task)
 
+        self.document = DocumentLayout(self.nodes, self)
         self.set_needs_render()
         self.loaded = True
 
@@ -159,7 +161,6 @@ class Frame:
             self.needs_style = False
 
         if self.needs_layout:
-            self.document = DocumentLayout(self.nodes, self)
             self.document.layout(self.frame_width, self.tab.zoom)
             self.tab.needs_accessibility = True
             self.needs_paint = True
@@ -195,12 +196,14 @@ class Frame:
             self.needs_focus_scroll = True
         if self.tab.focus:
             self.tab.focus.is_focused = False
+            dirty_style(self.tab.focus)
         if self.tab.focused_frame and self.tab.focused_frame != self:
             self.tab.focused_frame.set_needs_render()
         self.tab.focus = node
         self.tab.focused_frame = self
         if node:
             node.is_focused = True
+            dirty_style(node)
         self.set_needs_render()
 
     def activate_element(self, elt):
@@ -245,6 +248,23 @@ class Frame:
                 "keydown", self.tab.focus, self.window_id): return
             self.tab.focus.attributes["value"] += char
             self.set_needs_render()
+        elif self.tab.focus and \
+            "contenteditable" in self.tab.focus.attributes:
+            text_nodes = [
+               t for t in tree_to_list(self.tab.focus, [])
+               if isinstance(t, Text)
+            ]
+            if text_nodes:
+                last_text = text_nodes[-1]
+            else:
+                last_text = Text("", self.tab.focus)
+                self.tab.focus.children.append(last_text)
+            last_text.text += char
+            obj = self.tab.focus.layout_object
+            while not isinstance(obj, BlockLayout):
+                obj = obj.parent
+            obj.children.mark()
+            self.set_needs_render()
 
     def scrolldown(self):
         self.scroll = self.clamp_scroll(self.scroll + SCROLL_STEP)
@@ -259,12 +279,12 @@ class Frame:
         if not objs: return
         obj = objs[0]
 
-        if self.scroll < obj.y < self.scroll + self.frame_height:
+        if self.scroll < obj.y.get() < self.scroll + self.frame_height:
             return
-        new_scroll = obj.y - SCROLL_STEP
+        new_scroll = obj.y.get() - SCROLL_STEP
         self.scroll = self.clamp_scroll(new_scroll)
         self.scroll_changed_in_frame = True
-        self.tab.set_needs_paint()
+        self.set_needs_paint()
 
     def click(self, x, y):
         self.focus_element(None)
@@ -283,7 +303,7 @@ class Frame:
             elif elt.tag == "iframe":
                 abs_bounds = \
                     absolute_bounds_for_obj(elt.layout_object)
-                border = dpx(1, elt.layout_object.zoom)
+                border = dpx(1, elt.layout_object.zoom.get())
                 new_x = x - abs_bounds.left() - border
                 new_y = y - abs_bounds.top() - border
                 elt.frame.click(new_x, new_y)
@@ -296,52 +316,70 @@ class Frame:
             elt = elt.parent
 
     def clamp_scroll(self, scroll):
-        height = math.ceil(self.document.height + 2*VSTEP)
+        height = math.ceil(self.document.height.get() + 2*VSTEP)
         maxscroll = height - self.frame_height
         return max(0, min(scroll, maxscroll))
     
+def init_style(node):
+    node.style = dict([
+            (property, ProtectedField(node, property, None,
+                [node.parent.style[property]] \
+                    if node.parent and \
+                        property in INHERITED_PROPERTIES \
+                    else []))
+            for property in CSS_PROPERTIES
+        ])
 
 def style(node, rules, frame):
-    old_style = node.style
-
-    node.style = {}
-    for property, default_value in INHERITED_PROPERTIES.items():
-        if node.parent:
-            node.style[property] = node.parent.style[property]
-        else:
-            node.style[property] = default_value
-
-    for media, selector, body in rules:
-        if media:
-            if (media == "dark") != frame.tab.dark_mode: continue
-        if not selector.matches(node): continue
-        for property, value in body.items():
-            node.style[property] = value
-    # the style attribute should override style sheet values.
-    if isinstance(node, Element) and "style" in node.attributes:
-        pairs = CSSParser(node.attributes["style"]).body()
-        for property, value in pairs.items():
-            node.style[property] = value
-
-    if node.style["font-size"].endswith("%"):
-        if node.parent:
-            parent_font_size = node.parent.style["font-size"]
-        else:
-            parent_font_size = INHERITED_PROPERTIES["font-size"]
-        node_pct = float(node.style["font-size"][:-1]) / 100
-        parent_px = float(parent_font_size[:-2])
-        node.style["font-size"] = str(node_pct * parent_px) + "px"
-
-    if old_style:
-        transitions = diff_styles(old_style, node.style)
-        for property, (old_value, new_value, num_frames) \
-            in transitions.items():
-            if property == "opacity":
-                frame.set_needs_render()
-                animation = NumericAnimation(
-                    old_value, new_value, num_frames)
-                node.animations[property] = animation
-                node.style[property] = animation.animate()
+    if not node.style:
+        init_style(node)
+    needs_style = any([field.dirty for field in node.style.values()])
+    if needs_style:
+        old_style = dict([
+            (property, field.value)
+            for property, field in node.style.items()
+        ])
+        new_style = CSS_PROPERTIES.copy()
+        for property, default_value in INHERITED_PROPERTIES.items():
+            if node.parent:
+                parent_field = node.parent.style[property]
+                parent_value = \
+                    parent_field.read(notify=node.style[property])
+                new_style[property] = parent_value
+            else:
+                new_style[property] = default_value
+        for media, selector, body in rules:
+            if media:
+                if (media == 'dark') != frame.tab.dark_mode: continue
+            if not selector.matches(node): continue
+            for property, value in body.items():
+                new_style[property] = value
+        if isinstance(node, Element) and 'style' in node.attributes:
+            pairs = CSSParser(node.attributes['style']).body()
+            for property, value in pairs.items():
+                new_style[property] = value
+        if new_style["font-size"].endswith("%"):
+            if node.parent:
+                parent_field = node.parent.style["font-size"]
+                parent_font_size = \
+                    parent_field.read(notify=node.style["font-size"])
+            else:
+                parent_font_size = INHERITED_PROPERTIES["font-size"]
+            node_pct = float(new_style["font-size"][:-1]) / 100
+            parent_px = float(parent_font_size[:-2])
+            new_style["font-size"] = str(node_pct * parent_px) + "px"
+        if old_style:
+            transitions = diff_styles(old_style, new_style)
+            for property, (old_value, new_value, num_frames) in \
+                transitions.items():
+                if property == "opacity":
+                    frame.set_needs_render()
+                    animation = NumericAnimation(
+                        old_value, new_value, num_frames)
+                    node.animations[property] = animation
+                    new_style[property] = animation.animate()
+        for property, field in node.style.items():
+            field.set(new_style[property])
 
     for child in node.children:
         style(child, rules, frame)

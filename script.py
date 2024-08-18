@@ -3,6 +3,7 @@ import threading
 from parser import *
 from util import *
 from task import *
+from layout import *
 
 RUNTIME_JS = open("runtime.js").read()
 
@@ -95,6 +96,12 @@ class JSContext:
         self.throw_if_cross_origin(frame)
         elt = self.handle_to_node[handle]
         elt.attributes[attr] = value
+        obj = elt.layout_object
+        if isinstance(obj, IframeLayout) or \
+           isinstance(obj, ImageLayout):
+            if attr == "width" or attr == "height":
+                obj.width.mark()
+                obj.height.mark()
         self.tab.set_needs_render_all_frames()
     
     def dispatch_event(self, type, elt, window_id):
@@ -114,13 +121,19 @@ class JSContext:
         elt.children = new_nodes
         for child in elt.children:
             child.parent = elt
+        obj = elt.layout_object
+        if obj:
+            while not isinstance(obj, BlockLayout):
+                obj = obj.parent
+            obj.children.mark()
         frame.set_needs_render()
 
     def style_set(self, handle, s, window_id):
-        frame = self.tab.window_id_to_frame[window_id]        
+        frame = self.tab.window_id_to_frame[window_id]
         self.throw_if_cross_origin(frame)
         elt = self.handle_to_node[handle]
-        elt.attributes["style"] = s;
+        elt.attributes['style'] = s
+        dirty_style(elt)
         frame.set_needs_render()
 
     def dispatch_xhr_onload(self, out, handle, window_id):

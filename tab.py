@@ -3,7 +3,7 @@ import urllib.parse
 from network import *
 from parser import *
 from layout import *
-from config import *
+from constant import *
 from display import *
 from script import *
 from util import *
@@ -21,6 +21,7 @@ class Tab:
         
         self.tab_height = tab_height
         self.zoom = 1
+        self.scroll = 0;
         # 当前焦点  
         self.focus = None
         self.focused_frame = None
@@ -107,7 +108,9 @@ class Tab:
 
         if self.needs_paint:
             self.display_list = []
+            self.browser.measure.time('paint')
             paint_tree(self.root_frame.document, self.display_list)
+            self.browser.measure.stop('paint')
             self.needs_paint = False
 
         self.browser.measure.stop('render')
@@ -130,7 +133,7 @@ class Tab:
                     node.animations.items():
                     value = animation.animate()
                     if value:
-                        node.style[property_name] = value
+                        node.style[property_name].set(value)
                         if property_name == "opacity":
                             self.composited_updates.append(node)
                             self.set_needs_paint()
@@ -167,7 +170,7 @@ class Tab:
         commit_data = CommitData(
             self.root_frame.url, scroll,
             root_frame_focused,
-            math.ceil(self.root_frame.document.height),
+            math.ceil(self.root_frame.document.height.get()),
             self.display_list, composited_updates,
             self.accessibility_tree,
             self.focus
@@ -226,14 +229,18 @@ class Tab:
             self.zoom *= 1.1
             self.scroll *= 1.1
         else:
-            self.zoom *= 1/1.1
-            self.scroll *= 1/1.1
+            self.zoom *= 1 / 1.1
+            self.scroll *= 1 / 1.1
+        for id, frame in self.window_id_to_frame.items():
+            frame.document.zoom.mark()
         self.scroll_changed_in_tab = True
         self.set_needs_render_all_frames()
 
     def reset_zoom(self):
         self.scroll /= self.zoom
         self.zoom = 1
+        for id, frame in self.window_id_to_frame.items():
+            frame.document.zoom.mark()
         self.scroll_changed_in_tab = True
         self.set_needs_render_all_frames()
 
@@ -299,8 +306,11 @@ class Tab:
 
 
 def print_tree(node, indent=0):
-    print(" " * indent, node)
-    for child in node.children:
+    print(' ' * indent, node)
+    children = node.children
+    if isinstance(children, ProtectedField):
+        children = children.get()
+    for child in children:
         print_tree(child, indent + 2)
 
 def paint_tree(layout_object, display_list):
@@ -311,8 +321,12 @@ def paint_tree(layout_object, display_list):
         layout_object.node.frame.loaded:
         paint_tree(layout_object.node.frame.document, cmds)
     else:
-        for child in layout_object.children:
-            paint_tree(child, cmds)
+        if isinstance(layout_object.children, ProtectedField):
+            for child in layout_object.children.get():
+                paint_tree(child, cmds)
+        else:
+            for child in layout_object.children:
+                paint_tree(child, cmds)
 
     cmds = layout_object.paint_effects(cmds)
     display_list.extend(cmds)

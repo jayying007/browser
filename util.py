@@ -1,9 +1,13 @@
 import skia
 from parser import parse_transform
+from protected_field import *
 
 def tree_to_list(tree, list):
     list.append(tree)
-    for child in tree.children:
+    children = tree.children
+    if isinstance(children, ProtectedField):
+        children = children.get()
+    for child in children:
         tree_to_list(child, list)
     return list
 
@@ -77,12 +81,10 @@ def map_translation(rect, translation, reversed=False):
     
 def absolute_bounds_for_obj(obj):
     rect = skia.Rect.MakeXYWH(
-        obj.x, obj.y, obj.width, obj.height)
+        obj.x.get(), obj.y.get(), obj.width.get(), obj.height.get())
     cur = obj.node
     while cur:
-        rect = map_translation(rect,
-            parse_transform(
-                cur.style.get("transform", "")))
+        rect = map_translation(rect, parse_transform(cur.style['transform'].get()))
         cur = cur.parent
     return rect
 
@@ -121,3 +123,7 @@ def parse_image_rendering(quality):
         return skia.FilterQuality.kLow_FilterQuality
     else:
         return skia.FilterQuality.kMedium_FilterQuality
+    
+def dirty_style(node):
+    for property, value in node.style.items():
+        value.mark()

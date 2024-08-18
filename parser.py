@@ -3,9 +3,11 @@ class Text:
         self.text = text
         self.children = []
         self.parent = parent
-        self.style = {}
-        self.is_focused = False
+
+        self.style = None
         self.animations = {}
+
+        self.is_focused = False
         self.layout_object = None
     
     def __repr__(self):
@@ -17,9 +19,11 @@ class Element:
         self.attributes = attributes
         self.children = []
         self.parent = parent
-        self.style = {}
-        self.is_focused = False
+
+        self.style = None
         self.animations = {}
+
+        self.is_focused = False
         self.layout_object = None
 
     def __repr__(self):
