@@ -1,49 +1,41 @@
 import skia
 import math
 import urllib.parse
-from parser import *
+from parser.html_parser import *
 from layout import *
-from display import *
-from util import *
-from constant import *
-from task import *
-from accessibility import *
-from protected_field import *
-
-DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
+from display.commit_data import *
+from utils.util import *
+from setting.constant import *
+from common.task import *
+from view.accessibility import *
+from common.protected_field import *
+from setting.config import *
+from utils.render_util import *
+from layout.document_layout import *
 
 class Frame:
     def __init__(self, tab, parent_frame, frame_element):
         self.tab = tab
         self.parent_frame = parent_frame
         self.frame_element = frame_element
+        
+        self.url = None
+        self.loaded = False
+
+        self.js = None
+        self.nodes = None
+        self.document = None
         self.needs_style = False
         self.needs_layout = False
-
-        self.document = None
+        
         self.scroll = 0
         self.scroll_changed_in_frame = True
         self.needs_focus_scroll = False
-        self.nodes = None
-        self.url = None
-        self.js = None
-        self.loaded = False
-
         self.frame_width = 0
         self.frame_height = 0
 
         self.window_id = len(self.tab.window_id_to_frame)
         self.tab.window_id_to_frame[self.window_id] = self
-
-    def set_needs_render(self):
-        self.needs_style = True
-        self.tab.set_needs_accessibility()
-        self.tab.set_needs_paint()
-
-    def set_needs_layout(self):
-        self.needs_layout = True
-        self.tab.set_needs_accessibility()
-        self.tab.set_needs_paint()
 
     def allowed_request(self, url):
         return self.allowed_origins == None or \
@@ -69,12 +61,9 @@ class Frame:
         if self.js: self.js.discarded = True
         self.js = self.tab.get_js(url)
         self.js.add_window(self)
-
-        scripts = [node.attributes["src"] for node
-                   in tree_to_list(self.nodes, [])
-                   if isinstance(node, Element)
-                   and node.tag == "script"
-                   and "src" in node.attributes]
+        # 加载更多JS脚本
+        scripts = [node.attributes["src"] for node in tree_to_list(self.nodes, [])
+                   if isinstance(node, Element) and node.tag == "script" and "src" in node.attributes]
         for script in scripts:
             script_url = url.resolve(script)
             if not self.allowed_request(script_url):
@@ -86,10 +75,9 @@ class Frame:
             except:
                 continue
             body = body.decode("utf8", "replace")
-            task = Task(self.js.run, script_url, body,
-                self.window_id)
+            task = Task(self.js.run, script_url, body, self.window_id)
             self.tab.task_runner.schedule_task(task)
-
+        # 加载CSS
         self.rules = DEFAULT_STYLE_SHEET.copy()
         links = [node.attributes["href"]
                  for node in tree_to_list(self.nodes, [])
@@ -107,11 +95,9 @@ class Frame:
             except:
                 continue
             self.rules.extend(CSSParser(body.decode("utf8", "replace")).parse())
-
-        images = [node
-            for node in tree_to_list(self.nodes, [])
-            if isinstance(node, Element)
-            and node.tag == "img"]
+        # 加载图片
+        images = [node for node in tree_to_list(self.nodes, [])
+                  if isinstance(node, Element) and node.tag == "img"]
         for img in images:
             try:
                 src = img.attributes.get("src", "")
@@ -125,15 +111,11 @@ class Frame:
                 assert img.image, \
                     "Failed to recognize image format for " + str(image_url)
             except Exception as e:
-                print("Image", img.attributes.get("src", ""),
-                    "crashed", e)
+                print("Image", img.attributes.get("src", ""), "crashed", e)
                 img.image = BROKEN_IMAGE
-
-        iframes = [node
-                   for node in tree_to_list(self.nodes, [])
-                   if isinstance(node, Element)
-                   and node.tag == "iframe"
-                   and "src" in node.attributes]
+        # 加载iframe
+        iframes = [node for node in tree_to_list(self.nodes, [])
+                   if isinstance(node, Element) and node.tag == "iframe" and "src" in node.attributes]
         for iframe in iframes:
             document_url = url.resolve(iframe.attributes["src"])
             if not self.allowed_request(document_url):
@@ -147,35 +129,40 @@ class Frame:
         self.document = DocumentLayout(self.nodes, self)
         self.set_needs_render()
         self.loaded = True
+    ##########################
+    # 渲染
+    ##########################
+    def set_needs_render(self):
+        self.needs_style = True
+        self.tab.set_needs_accessibility()
+        self.tab.set_needs_paint()
+
+    def set_needs_layout(self):
+        self.needs_layout = True
+        self.tab.set_needs_accessibility()
+        self.tab.set_needs_paint()
 
     def render(self):
         if self.needs_style:
-            if self.tab.dark_mode:
-                INHERITED_PROPERTIES["color"] = "white"
-            else:
-                INHERITED_PROPERTIES["color"] = "black"
-            style(self.nodes,
-                  sorted(self.rules,
-                         key=cascade_priority), self)
+            style(self.nodes, sorted(self.rules, key=cascade_priority), self)
             self.needs_layout = True
             self.needs_style = False
 
         if self.needs_layout:
             self.document.layout(self.frame_width, self.tab.zoom)
             self.tab.needs_accessibility = True
-            self.needs_paint = True
             self.needs_layout = False
 
         clamped_scroll = self.clamp_scroll(self.scroll)
         if clamped_scroll != self.scroll:
             self.scroll_changed_in_frame = True
         self.scroll = clamped_scroll
-
+    ##############################
+    # 用户事件
+    ##############################
     def advance_tab(self):
-        focusable_nodes = [node
-            for node in tree_to_list(self.nodes, [])
-            if isinstance(node, Element) and is_focusable(node)                          
-            and get_tabindex(node) >= 0]
+        focusable_nodes = [node for node in tree_to_list(self.nodes, [])
+                           if isinstance(node, Element) and is_focusable(node) and get_tabindex(node) >= 0]
         focusable_nodes.sort(key=get_tabindex)
 
         if self.tab.focus in focusable_nodes:
@@ -224,9 +211,7 @@ class Frame:
         if self.js.dispatch_event(
             "submit", elt, self.window_id): return
         inputs = [node for node in tree_to_list(elt, [])
-                  if isinstance(node, Element)
-                  and node.tag == "input"
-                  and "name" in node.attributes]
+                  if isinstance(node, Element) and node.tag == "input" and "name" in node.attributes]
 
         body = ""
         for input in inputs:
@@ -244,16 +229,12 @@ class Frame:
         if self.tab.focus and self.tab.focus.tag == "input":
             if not "value" in self.tab.focus.attributes:
                 self.activate_element(self.tab.focus)
-            if self.js.dispatch_event(
-                "keydown", self.tab.focus, self.window_id): return
+            if self.js.dispatch_event("keydown", self.tab.focus, self.window_id): return
             self.tab.focus.attributes["value"] += char
             self.set_needs_render()
-        elif self.tab.focus and \
-            "contenteditable" in self.tab.focus.attributes:
-            text_nodes = [
-               t for t in tree_to_list(self.tab.focus, [])
-               if isinstance(t, Text)
-            ]
+        elif self.tab.focus and "contenteditable" in self.tab.focus.attributes:
+            text_nodes = [t for t in tree_to_list(self.tab.focus, [])
+                          if isinstance(t, Text)]
             if text_nodes:
                 last_text = text_nodes[-1]
             else:
@@ -284,15 +265,13 @@ class Frame:
         new_scroll = obj.y.get() - SCROLL_STEP
         self.scroll = self.clamp_scroll(new_scroll)
         self.scroll_changed_in_frame = True
-        self.set_needs_paint()
 
     def click(self, x, y):
         self.focus_element(None)
         y += self.scroll
         loc_rect = skia.Rect.MakeXYWH(x, y, 1, 1)
         objs = [obj for obj in tree_to_list(self.document, [])
-                if absolute_bounds_for_obj(obj).intersects(
-                    loc_rect)]
+                if absolute_bounds_for_obj(obj).intersects(loc_rect)]
         if not objs: return
         elt = objs[-1].node
         if elt and self.js.dispatch_event(
@@ -319,94 +298,3 @@ class Frame:
         height = math.ceil(self.document.height.get() + 2*VSTEP)
         maxscroll = height - self.frame_height
         return max(0, min(scroll, maxscroll))
-    
-def init_style(node):
-    node.style = dict([
-            (property, ProtectedField(node, property, None,
-                [node.parent.style[property]] \
-                    if node.parent and \
-                        property in INHERITED_PROPERTIES \
-                    else []))
-            for property in CSS_PROPERTIES
-        ])
-
-def style(node, rules, frame):
-    if not node.style:
-        init_style(node)
-    needs_style = any([field.dirty for field in node.style.values()])
-    if needs_style:
-        old_style = dict([
-            (property, field.value)
-            for property, field in node.style.items()
-        ])
-        new_style = CSS_PROPERTIES.copy()
-        for property, default_value in INHERITED_PROPERTIES.items():
-            if node.parent:
-                parent_field = node.parent.style[property]
-                parent_value = \
-                    parent_field.read(notify=node.style[property])
-                new_style[property] = parent_value
-            else:
-                new_style[property] = default_value
-        for media, selector, body in rules:
-            if media:
-                if (media == 'dark') != frame.tab.dark_mode: continue
-            if not selector.matches(node): continue
-            for property, value in body.items():
-                new_style[property] = value
-        if isinstance(node, Element) and 'style' in node.attributes:
-            pairs = CSSParser(node.attributes['style']).body()
-            for property, value in pairs.items():
-                new_style[property] = value
-        if new_style["font-size"].endswith("%"):
-            if node.parent:
-                parent_field = node.parent.style["font-size"]
-                parent_font_size = \
-                    parent_field.read(notify=node.style["font-size"])
-            else:
-                parent_font_size = INHERITED_PROPERTIES["font-size"]
-            node_pct = float(new_style["font-size"][:-1]) / 100
-            parent_px = float(parent_font_size[:-2])
-            new_style["font-size"] = str(node_pct * parent_px) + "px"
-        if old_style:
-            transitions = diff_styles(old_style, new_style)
-            for property, (old_value, new_value, num_frames) in \
-                transitions.items():
-                if property == "opacity":
-                    frame.set_needs_render()
-                    animation = NumericAnimation(
-                        old_value, new_value, num_frames)
-                    node.animations[property] = animation
-                    new_style[property] = animation.animate()
-        for property, field in node.style.items():
-            field.set(new_style[property])
-
-    for child in node.children:
-        style(child, rules, frame)
-
-def parse_transition(value):
-    properties = {}
-    if not value: return properties
-    for item in value.split(","):
-        property, duration = item.split(" ", 1)
-        frames = int(float(duration[:-1]) / REFRESH_RATE_SEC)
-        properties[property] = frames
-    return properties
-
-def diff_styles(old_style, new_style):
-    transitions = {}
-    for property, num_frames in \
-        parse_transition(new_style.get("transition")).items():
-        if property not in old_style: continue
-        if property not in new_style: continue
-        old_value = old_style[property]
-        new_value = new_style[property]
-        if old_value == new_value: continue
-        transitions[property] = \
-            (old_value, new_value, num_frames)
-
-    return transitions
-
-def cascade_priority(rule):
-    media, selector, body = rule
-    return selector.priority

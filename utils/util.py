@@ -1,6 +1,14 @@
 import skia
-from parser import parse_transform
-from protected_field import *
+from parser.css_parser import parse_transform
+from common.protected_field import *
+
+def print_tree(node, indent=0):
+    print(' ' * indent, node)
+    children = node.children
+    if isinstance(children, ProtectedField):
+        children = children.get()
+    for child in children:
+        print_tree(child, indent + 2)
 
 def tree_to_list(tree, list):
     list.append(tree)
@@ -50,19 +58,7 @@ def parse_color(color):
         return parse_color(NAMED_COLORS[color])
     else:
         return skia.ColorBLACK
-    
-def parse_blend_mode(blend_mode_str):
-    if blend_mode_str == "multiply":
-        return skia.BlendMode.kMultiply
-    elif blend_mode_str == "difference":
-        return skia.BlendMode.kDifference
-    elif blend_mode_str == "destination-in":
-        return skia.BlendMode.kDstIn
-    elif blend_mode_str == "source-over":
-        return skia.BlendMode.kSrcOver
-    else:
-        return skia.BlendMode.kSrcOver
-    
+
 def linespace(font):
     metrics = font.getMetrics()
     return metrics.fDescent - metrics.fAscent
@@ -80,8 +76,7 @@ def map_translation(rect, translation, reversed=False):
         return matrix.mapRect(rect)
     
 def absolute_bounds_for_obj(obj):
-    rect = skia.Rect.MakeXYWH(
-        obj.x.get(), obj.y.get(), obj.width.get(), obj.height.get())
+    rect = skia.Rect.MakeXYWH(obj.x.get(), obj.y.get(), obj.width.get(), obj.height.get())
     cur = obj.node
     while cur:
         rect = map_translation(rect, parse_transform(cur.style['transform'].get()))
@@ -123,7 +118,34 @@ def parse_image_rendering(quality):
         return skia.FilterQuality.kLow_FilterQuality
     else:
         return skia.FilterQuality.kMedium_FilterQuality
-    
-def dirty_style(node):
-    for property, value in node.style.items():
-        value.mark()
+
+# 字体缓存
+FONTS = {}
+def get_font(size, weight, style):
+    key = (weight, style)
+    if key not in FONTS:
+        if weight == "bold":
+            skia_weight = skia.FontStyle.kBold_Weight
+        else:
+            skia_weight = skia.FontStyle.kNormal_Weight
+        if style == "italic":
+            skia_style = skia.FontStyle.kItalic_Slant
+        else:
+            skia_style = skia.FontStyle.kUpright_Slant
+        skia_width = skia.FontStyle.kNormal_Width
+        style_info = \
+            skia.FontStyle(skia_weight, skia_width, skia_style)
+        font = skia.Typeface('Arial', style_info)
+        FONTS[key] = font
+    return skia.Font(FONTS[key], size)
+
+def font(css_style, zoom, notify):
+    weight = css_style['font-weight'].read(notify)
+    style = css_style['font-style'].read(notify)
+    size = None
+    try:
+        size = float(css_style['font-size'].read(notify)[:-2]) * 0.75
+    except:
+        size = 16
+    font_size = dpx(size, zoom)
+    return get_font(font_size, weight, style)

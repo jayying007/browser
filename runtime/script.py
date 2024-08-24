@@ -1,18 +1,15 @@
 import dukpy
 import threading
-from parser import *
-from util import *
-from task import *
-from layout import *
+from parser.css_parser import *
+from utils.util import *
+from common.task import *
+from layout.block_layout import *
 
-RUNTIME_JS = open("runtime.js").read()
+RUNTIME_JS = open("runtime/runtime.js").read()
 
-EVENT_DISPATCH_JS = \
-    "new window.Node(dukpy.handle)" + \
-    ".dispatchEvent(new window.Event(dukpy.type))"
+EVENT_DISPATCH_JS = "new window.Node(dukpy.handle).dispatchEvent(new window.Event(dukpy.type))"
 
-POST_MESSAGE_DISPATCH_JS = \
-    "window.dispatchEvent(new window.MessageEvent(dukpy.data))"
+POST_MESSAGE_DISPATCH_JS = "window.dispatchEvent(new window.MessageEvent(dukpy.data))"
 
 SETTIMEOUT_JS = "window.__runSetTimeout(dukpy.handle)"
 

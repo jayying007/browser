@@ -1,6 +1,9 @@
 import skia
-from util import *
-from parser import *
+import os
+import gtts
+import playsound
+from utils.util import *
+from parser.css_parser import *
 
 def is_focusable(node):
     if get_tabindex(node) <= 0:
@@ -15,6 +18,14 @@ def is_focusable(node):
 def get_tabindex(node):
     tabindex = int(node.attributes.get("tabindex", "9999999"))
     return 9999999 if tabindex == 0 else tabindex
+
+SPEECH_FILE = "/tmp/speech-fragment.mp3"
+def speak_text(text):
+    print("SPEAK:", text)
+    # tts = gtts.gTTS(text)
+    # tts.save(SPEECH_FILE)
+    # playsound.playsound(SPEECH_FILE)
+    # os.remove(SPEECH_FILE)
 
 class AccessibilityNode:
     def __init__(self, node, parent=None):

@@ -1,6 +1,6 @@
 import skia
 
-WIDTH, HEIGHT = 800, 600
+WIDTH, HEIGHT = 1600, 900
 
 SCROLL_STEP = 100
 

@@ -28,16 +28,16 @@ iframe { outline: 1px solid black; }
 
 @media (prefers-color-scheme: dark) {
 
-a { color: lightblue; }
-input { background-color: blue; }
-button { background-color: orangered; }
+    a { color: lightblue; }
+    input { background-color: blue; }
+    button { background-color: orangered; }
 
-input:focus { outline: 1px solid white; }
+    input:focus { outline: 1px solid white; }
 
-button:focus { outline: 1px solid white; }
+    button:focus { outline: 1px solid white; }
 
-div:focus { outline: 1px solid white; }
+    div:focus { outline: 1px solid white; }
 
-a:focus { outline: 1px solid white; }
+    a:focus { outline: 1px solid white; }
 
 }

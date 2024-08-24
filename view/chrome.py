@@ -1,13 +1,13 @@
 import skia
-from network import *
-from parser import *
+from common.network import *
+from parser.css_parser import *
 from layout import *
-from constant import *
-from display import *
-from script import *
-from util import *
-from task import *
-from measure import *
+from setting.constant import *
+from runtime.script import *
+from utils.util import *
+from common.task import *
+from common.measure import *
+from setting.config import *
 
 class Chrome:
     def __init__(self, browser):
@@ -47,7 +47,7 @@ class Chrome:
         self.bottom = self.urlbar_bottom
         
     def paint(self):
-        if self.browser.dark_mode:
+        if Config.dark_mode:
             color = "white"
         else:
             color = "black"
@@ -137,9 +137,6 @@ class Chrome:
             for i, tab in enumerate(self.browser.tabs):
                 if self.tab_rect(i).contains(x, y):
                     self.browser.set_active_tab(tab)
-                    active_tab = self.browser.active_tab
-                    task = Task(active_tab.set_needs_render)
-                    active_tab.task_runner.schedule_task(task)
                     break
     
     def keypress(self, char):

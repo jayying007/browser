@@ -1,8 +1,7 @@
-from constant import *
+from setting.constant import *
 
 class ProtectedField:
-    def __init__(self, obj, name, parent=None, dependencies=None,
-        invalidations=None):
+    def __init__(self, obj, name, parent=None, dependencies=None, invalidations=None):
         self.obj = obj
         self.name = name
         self.parent = parent
